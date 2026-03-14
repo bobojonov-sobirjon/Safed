@@ -1,0 +1,46 @@
+# Django
+Django>=5.0,<7.0
+asgiref>=3.7.0
+
+# Django REST Framework
+djangorestframework>=3.14.0
+djangorestframework_simplejwt>=5.3.0
+django-filter>=24.0
+drf-spectacular>=0.27.0
+
+# Database
+psycopg>=3.1.0
+psycopg2-binary>=2.9.9
+
+# ASGI Server
+daphne>=4.0.0
+channels>=4.0.0
+channels-redis>=4.2.0
+
+# Authentication & Security
+PyJWT>=2.8.0
+python-dotenv>=1.0.0
+
+# Translations
+django-parler>=2.3
+
+# CORS
+django-cors-headers>=4.3.0
+
+# Static files
+whitenoise>=6.6.0
+
+# Caching
+django-redis>=5.4.0
+
+# Images & Barcodes
+pillow>=10.0.0
+python-barcode[images]>=0.15.0
+qrcode>=7.4.0
+
+# Utilities
+requests>=2.31.0
+PyYAML>=6.0.0
+
+# Typing
+typing-extensions>=4.9.0
