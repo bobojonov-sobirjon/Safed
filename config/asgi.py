@@ -12,8 +12,8 @@ import os
 from channels.auth import AuthMiddlewareStack
 from channels.routing import ProtocolTypeRouter, URLRouter
 from channels.security.websocket import AllowedHostsOriginValidator
-from channels.sessions import SessionMiddlewareStack
 from django.core.asgi import get_asgi_application
+from django.conf import settings
 
 os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'config.settings')
 
@@ -22,15 +22,23 @@ django_asgi_app = get_asgi_application()
 from config.routing import websocket_urlpatterns
 from config.middleware.tokenauth_middleware import TokenAuthMiddleware
 
+
+def get_websocket_application():
+    """Build WebSocket application with appropriate security."""
+    websocket_app = TokenAuthMiddleware(
+        AuthMiddlewareStack(
+            URLRouter(websocket_urlpatterns)
+        )
+    )
+    
+    # Only use AllowedHostsOriginValidator in production
+    if not settings.DEBUG:
+        websocket_app = AllowedHostsOriginValidator(websocket_app)
+    
+    return websocket_app
+
+
 application = ProtocolTypeRouter({
     "http": django_asgi_app,
-    "websocket": AllowedHostsOriginValidator(
-        SessionMiddlewareStack(
-            AuthMiddlewareStack(
-                TokenAuthMiddleware(
-                    URLRouter(websocket_urlpatterns)
-                )
-            )
-        )
-    ),
+    "websocket": get_websocket_application(),
 })
