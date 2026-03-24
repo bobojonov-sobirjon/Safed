@@ -151,7 +151,8 @@ class Products(TranslatableModel):
             null=True,
             blank=True
         ),
-        expiration_date=models.DateField(
+        expiration_date=models.CharField(
+            max_length=255,
             verbose_name='Срок годности',
             null=True,
             blank=True
@@ -274,9 +275,7 @@ class Products(TranslatableModel):
         self.save(update_fields=['is_deleted'])
 
 
-# Alias for cleaner code
 Product = Products
-
 
 class ProductBarcode(models.Model):
     """Product barcode."""

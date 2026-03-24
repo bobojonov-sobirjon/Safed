@@ -362,7 +362,7 @@ def _create_or_update_barcode(product, barcode_number=None):
 - name: Название продукта
 - description: Описание продукта
 - composition: Состав продукта
-- expiration_date: Срок годности (формат: YYYY-MM-DD)
+- expiration_date: Срок годности (текстовое поле)
 - country: Страна производства
 - grammage: Граммаж/вес
 
@@ -380,7 +380,7 @@ def _create_or_update_barcode(product, barcode_number=None):
                 'properties': {
                     'translations': {
                         'type': 'string',
-                        'description': 'JSON строка с переводами. Поля: name, description, composition, expiration_date (YYYY-MM-DD), country, grammage',
+                        'description': 'JSON строка с переводами. Поля: name, description, composition, expiration_date (text), country, grammage',
                         'example': '{"uz": {"name": "Olma", "description": "Yangi olma", "composition": "100% tabiiy", "expiration_date": "2026-12-31", "country": "O\'zbekiston", "grammage": "1 kg"}, "ru": {"name": "Яблоко", "description": "Свежее яблоко", "composition": "100% натуральный", "expiration_date": "2026-12-31", "country": "Узбекистан", "grammage": "1 кг"}, "en": {"name": "Apple", "description": "Fresh apple", "composition": "100% natural", "expiration_date": "2026-12-31", "country": "Uzbekistan", "grammage": "1 kg"}}'
                     },
                     'badge': {'type': 'integer', 'description': 'ID бейджа (опционально, оставьте пустым если нет)', 'nullable': True},
@@ -480,7 +480,7 @@ class ProductListCreateView(APIView):
 - name: Название продукта
 - description: Описание продукта
 - composition: Состав продукта
-- expiration_date: Срок годности (формат: YYYY-MM-DD)
+- expiration_date: Срок годности (текстовое поле)
 - country: Страна производства
 - grammage: Граммаж/вес
 
@@ -497,7 +497,7 @@ class ProductListCreateView(APIView):
                 'properties': {
                     'translations': {
                         'type': 'string',
-                        'description': 'JSON строка с переводами. Поля: name, description, composition, expiration_date (YYYY-MM-DD), country, grammage',
+                        'description': 'JSON строка с переводами. Поля: name, description, composition, expiration_date (text), country, grammage',
                         'example': '{"uz": {"name": "Olma", "description": "Yangi olma"}, "ru": {"name": "Яблоко", "description": "Свежее яблоко"}}'
                     },
                     'badge': {'type': 'integer', 'description': 'ID бейджа (опционально)', 'nullable': True},

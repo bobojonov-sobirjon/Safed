@@ -9,6 +9,18 @@ from django.db import transaction
 from django.db.models import Sum, Count, F
 from django.db.models.functions import TruncDate, TruncWeek, TruncMonth
 from django.utils.dateparse import parse_date
+from datetime import date as date_cls, datetime as datetime_cls
+
+
+def _period_to_iso(p):
+    """Trunc* natijasi: datetime yoki date bo'lishi mumkin — JSON uchun YYYY-MM-DD."""
+    if p is None:
+        return None
+    if isinstance(p, datetime_cls):
+        return p.date().isoformat()
+    if isinstance(p, date_cls):
+        return p.isoformat()
+    return str(p)
 
 from .models import Order, OrderProduct, OrderCourier
 from apps.products.models import Products
@@ -501,10 +513,10 @@ class StatsOverviewView(APIView):
 
         for item in orders_ts:
             if item['period'] is not None:
-                item['period'] = item['period'].date().isoformat()
+                item['period'] = _period_to_iso(item['period'])
         for item in revenue_ts:
             if item['period'] is not None:
-                item['period'] = item['period'].date().isoformat()
+                item['period'] = _period_to_iso(item['period'])
 
         return Response({
             'total_orders': total_orders,
@@ -595,7 +607,7 @@ class ProductStatsView(APIView):
         )
         for item in sales_ts:
             if item['period'] is not None:
-                item['period'] = item['period'].date().isoformat()
+                item['period'] = _period_to_iso(item['period'])
 
         return Response({
             'top_products': top_products,

@@ -179,3 +179,35 @@ class CategoryUpdateSerializer(serializers.Serializer):
                 else:
                     instance.create_translation(lang, name=name)
         return instance
+
+
+class CategoryHomeListSerializer(serializers.ModelSerializer):
+    """Kategoriyalar ro'yxati: faqat home_order berilganlar (GET)."""
+    name = serializers.SerializerMethodField()
+    icon = serializers.SerializerMethodField()
+
+    class Meta:
+        model = Category
+        fields = ['id', 'name', 'icon', 'is_active', 'order', 'home_order']
+
+    def get_name(self, obj):
+        translations = {}
+        for lang in PARLER_LANGUAGES:
+            if obj.has_translation(lang):
+                obj.set_current_language(lang)
+                translations[lang] = {'name': obj.name or ''}
+        return translations
+
+    def get_icon(self, obj):
+        if obj.icon:
+            request = self.context.get('request')
+            if request:
+                return request.build_absolute_uri(obj.icon.url)
+            return obj.icon.url
+        return None
+
+
+class CategoryHomeOrderAssignSerializer(serializers.Serializer):
+    """POST: category_id va home_order — bir xil slotdagi boshqa kategoriyalar home_order=null."""
+    category_id = serializers.IntegerField(required=True, min_value=1)
+    home_order = serializers.IntegerField(required=True, min_value=1)

@@ -40,7 +40,11 @@ class Category(TranslatableModel):
             blank=True
         ),
     )
-    
+    home_order = models.PositiveIntegerField(
+        default=0,
+        verbose_name='Порядок на главной странице',
+        db_index=True, null=True, blank=True
+    )
     parent = models.ForeignKey(
         'self',
         on_delete=models.CASCADE,
@@ -55,6 +59,7 @@ class Category(TranslatableModel):
         blank=True,
         verbose_name='Иконка категории'
     )
+    
     is_active = models.BooleanField(
         default=True,
         verbose_name='Активная категория',

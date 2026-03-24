@@ -1,4 +1,5 @@
 import json
+from django.db import transaction
 from rest_framework import status
 from rest_framework.views import APIView
 from rest_framework.response import Response
@@ -13,6 +14,8 @@ from .serializers import (
     CategoryCreateSerializer,
     ChildCategoryCreateSerializer,
     CategoryUpdateSerializer,
+    CategoryHomeListSerializer,
+    CategoryHomeOrderAssignSerializer,
 )
 
 
@@ -333,3 +336,69 @@ class CategoryDetailUpdateDeleteView(APIView):
             return Response({'detail': 'Категория не найдена'}, status=404)
         category.delete()
         return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+@extend_schema_view(
+    get=extend_schema(
+        tags=['Категории'],
+        summary='Категории на главной',
+        description=(
+            'Список категорий, у которых задан `home_order` (> 0). '
+            'Сортировка по возрастанию `home_order`.'
+        ),
+    ),
+    post=extend_schema(
+        tags=['Категории'],
+        summary='Назначить категорию на слот главной',
+        description=(
+            'Устанавливает `home_order` для категории. '
+            'Если другая категория уже занимала этот номер слота, у неё `home_order` сбрасывается в null.'
+        ),
+        request=CategoryHomeOrderAssignSerializer,
+        responses={200: CategoryHomeListSerializer(many=True)},
+    ),
+)
+class CategoryHomeListAssignView(APIView):
+    """GET: home_order > 0, order_by home_order. POST: назначить слот, конфликтующие — null."""
+
+    def get_permissions(self):
+        if self.request.method == 'GET':
+            return [AllowAny()]
+        return [IsAuthenticated()]
+
+    def get(self, request):
+        qs = (
+            Category.objects.filter(home_order__gt=0)
+            .prefetch_related('translations')
+            .order_by('home_order')
+        )
+        serializer = CategoryHomeListSerializer(qs, many=True, context={'request': request})
+        return Response(serializer.data)
+
+    def post(self, request):
+        ser = CategoryHomeOrderAssignSerializer(data=request.data)
+        if not ser.is_valid():
+            return Response(ser.errors, status=status.HTTP_400_BAD_REQUEST)
+        category_id = ser.validated_data['category_id']
+        home_order = ser.validated_data['home_order']
+
+        with transaction.atomic():
+            try:
+                category = Category.objects.select_for_update().get(pk=category_id)
+            except Category.DoesNotExist:
+                return Response({'category_id': ['Категория не найдена']}, status=status.HTTP_404_NOT_FOUND)
+
+            # Bir xil home_order dagi boshqa kategoriyalarni home_order=null
+            Category.objects.filter(home_order=home_order).exclude(pk=category.pk).update(home_order=None)
+
+            category.home_order = home_order
+            category.save(update_fields=['home_order', 'updated_at'])
+
+        # Yangilangan ro'yxat (barcha home kategoriyalar)
+        qs = (
+            Category.objects.filter(home_order__gt=0)
+            .prefetch_related('translations')
+            .order_by('home_order')
+        )
+        out = CategoryHomeListSerializer(qs, many=True, context={'request': request})
+        return Response(out.data, status=status.HTTP_200_OK)
