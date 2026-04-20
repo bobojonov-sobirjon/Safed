@@ -6,6 +6,7 @@ from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.pagination import LimitOffsetPagination
 from drf_spectacular.utils import extend_schema, extend_schema_view, OpenApiParameter, OpenApiExample
 from drf_spectacular.types import OpenApiTypes
+from django.db.models import Q
 
 from .models import Badge, Unit, Products, ProductBarcode, ProductImage, ProductSavedUser
 from .serializers import (
@@ -347,6 +348,7 @@ def _create_or_update_barcode(product, barcode_number=None):
         tags=['Продукты'],
         summary='Список продуктов',
         parameters=[
+            OpenApiParameter(name='q', type=OpenApiTypes.STR, description='Поиск по названию/описанию/штрихкоду/unique_id'),
             OpenApiParameter(name='category', type=OpenApiTypes.INT),
             OpenApiParameter(name='is_active', type=OpenApiTypes.BOOL),
             OpenApiParameter(name='limit', type=OpenApiTypes.INT, description='Pagination limit'),
@@ -412,6 +414,14 @@ class ProductListCreateView(APIView):
         from apps.categories.models import Category
         
         qs = Products.objects.all().order_by('-created_at')
+        q = (request.query_params.get('q') or '').strip()
+        if q:
+            qs = qs.filter(
+                Q(unique_id__icontains=q)
+                | Q(barcodes__barcode__icontains=q)
+                | Q(translations__name__icontains=q)
+                | Q(translations__description__icontains=q)
+            ).distinct()
         cat = request.query_params.get('category')
         if cat:
             category_ids = self._get_category_with_descendants(int(cat))
@@ -451,6 +461,7 @@ class ProductListCreateView(APIView):
         product = Products.objects.create(
             badge=v.get('badge'),
             unit=v.get('unit'),
+            shelf_location=v.get('shelf_location'),
             quantity=v.get('quantity', 0),
             price=v['price'],
             price_discount=v.get('price_discount'),
@@ -543,7 +554,7 @@ class ProductDetailView(APIView):
             return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
         v = serializer.validated_data
-        for field in ['quantity', 'price', 'price_discount', 'discount_percentage', 'is_discount', 'is_active']:
+        for field in ['shelf_location', 'quantity', 'price', 'price_discount', 'discount_percentage', 'is_discount', 'is_active']:
             if field in v:
                 setattr(product, field, v[field])
         

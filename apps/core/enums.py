@@ -7,29 +7,31 @@ from typing import List, Tuple
 
 class OrderStatus(str, Enum):
     """Order status choices."""
-    PENDING = 'pending'
-    PROCESS = 'process'
-    DELIVERING = 'delivering'
-    COMPLETED = 'completed'
-    REJECTED = 'rejected'
+    NEW = 'new'                 # yangi
+    PICKING = 'picking'         # yig'ilyapti
+    ON_THE_WAY = 'on_the_way'   # yo'lda
+    DELIVERED = 'delivered'     # yetkazildi
+    REJECTED = 'rejected'       # bekor (admin/operator)
+    CANCELLED = 'cancelled'     # bekor (user)
     
     @classmethod
     def choices(cls) -> List[Tuple[str, str]]:
         return [
-            (cls.PENDING.value, 'В ожидании'),
-            (cls.PROCESS.value, 'В обработке'),
-            (cls.DELIVERING.value, 'Доставляется'),
-            (cls.COMPLETED.value, 'Выполнен'),
+            (cls.NEW.value, 'Yangi'),
+            (cls.PICKING.value, 'Yig‘ilyapti'),
+            (cls.ON_THE_WAY.value, 'Yo‘lda'),
+            (cls.DELIVERED.value, 'Yetkazildi'),
             (cls.REJECTED.value, 'Отменён'),
+            (cls.CANCELLED.value, 'Отменён пользователем'),
         ]
     
     @classmethod
     def active_statuses(cls) -> List[str]:
-        return [cls.PENDING.value, cls.PROCESS.value, cls.DELIVERING.value]
+        return [cls.NEW.value, cls.PICKING.value, cls.ON_THE_WAY.value]
     
     @classmethod
     def final_statuses(cls) -> List[str]:
-        return [cls.COMPLETED.value, cls.REJECTED.value]
+        return [cls.DELIVERED.value, cls.REJECTED.value, cls.CANCELLED.value]
 
 
 class UserGroup(str, Enum):

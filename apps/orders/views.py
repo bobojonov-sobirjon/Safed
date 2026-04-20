@@ -30,10 +30,14 @@ from .serializers import (
     OrderUpdateSerializer,
     AddCourierSerializer,
     StatusChangeSerializer,
+    FinalizePricingSerializer,
 )
+from apps.core.enums import OrderStatus, UserGroup
+from .pricing import compute_order_pricing
+from decimal import Decimal
 
-COURIER_GROUP = 'Courier'
-STAFF_GROUPS = ['Super Admin', 'Admin', 'Operator', 'Courier']
+COURIER_GROUP = UserGroup.COURIER.value
+STAFF_GROUPS = UserGroup.staff_groups()
 
 
 def user_is_courier(user):
@@ -57,11 +61,14 @@ def user_is_super_admin(user):
 
 **Поля:**
 - `products_data` - список продуктов (обязательно)
-- `lat` - широта (опционально)
-- `long` - долгота (опционально)
-- `address` - адрес доставки (опционально)
+- `lat` - широта (обязательно)
+- `long` - долгота (обязательно)
+- `address` - адрес доставки (обязательно)
+- `entrance` - подъезд (опционально)
+- `apartment` - дом/квартира (опционально)
+- `comment` - комментарий (опционально)
 
-**Примечание:** Статус заказа автоматически устанавливается как `pending`.
+**Примечание:** Статус заказа автоматически устанавливается как `new`.
 ''',
     request={
         'application/json': {
@@ -87,8 +94,11 @@ def user_is_super_admin(user):
                 'lat': {'type': 'number', 'description': 'Широта', 'example': 41.311081},
                 'long': {'type': 'number', 'description': 'Долгота', 'example': 69.240562},
                 'address': {'type': 'string', 'description': 'Адрес доставки', 'example': 'г. Ташкент, ул. Амира Темура, 10'},
+                'entrance': {'type': 'string', 'description': 'Подъезд', 'example': '2'},
+                'apartment': {'type': 'string', 'description': 'Дом/квартира', 'example': '12'},
+                'comment': {'type': 'string', 'description': 'Комментарий', 'example': 'Домофон не работает'},
             },
-            'required': ['products_data'],
+            'required': ['products_data', 'lat', 'long', 'address'],
         }
     },
 )
@@ -127,10 +137,13 @@ class OrderCreateView(APIView):
 
             order = Order.objects.create(
                 user=request.user,
-                lat=v.get('lat'),
-                long=v.get('long'),
-                address=v.get('address', ''),
-                status='pending',
+                lat=v['lat'],
+                long=v['long'],
+                address=v['address'],
+                entrance=v.get('entrance') or '',
+                apartment=v.get('apartment') or '',
+                comment=v.get('comment') or '',
+                status=OrderStatus.NEW.value,
             )
             for item in v['products_data']:
                 OrderProduct.objects.create(
@@ -139,6 +152,8 @@ class OrderCreateView(APIView):
                     quantity=item['quantity'],
                     total_price=item['total_price'],
                 )
+            compute_order_pricing(order)
+            order.save()
 
         return Response(OrderListSerializer(order, context={'request': request}).data, status=status.HTTP_201_CREATED)
 
@@ -151,8 +166,8 @@ class OrderCreateView(APIView):
     description='''Назначить курьера на заказ.
 
 **Условия:**
-- Заказ должен быть в статусе `pending`
-- После назначения статус меняется на `delivering`
+- Заказ должен быть в статусе `picking`
+- После назначения статус меняется на `on_the_way`
 - Пользователь должен быть в группе `Courier`
 ''',
     request={
@@ -180,7 +195,7 @@ class OrderAddCourierView(APIView):
             return Response({'detail': 'Не найден'}, status=status.HTTP_404_NOT_FOUND)
 
         if not order.can_add_courier:
-            return Response({'detail': 'Курьера можно добавить только при статусе pending'}, status=status.HTTP_400_BAD_REQUEST)
+            return Response({'detail': 'Курьера можно добавить только при статусе picking'}, status=status.HTTP_400_BAD_REQUEST)
 
         from apps.accounts.models import CustomUser
         try:
@@ -192,7 +207,7 @@ class OrderAddCourierView(APIView):
             return Response({'courier_id': ['Пользователь не является курьером']}, status=status.HTTP_400_BAD_REQUEST)
 
         OrderCourier.objects.get_or_create(order=order, courier=courier)
-        order.status = 'delivering'
+        order.status = OrderStatus.ON_THE_WAY.value
         order.save()
 
         return Response(OrderListSerializer(order, context={'request': request}).data)
@@ -206,13 +221,14 @@ class OrderAddCourierView(APIView):
     description='''Изменить статус заказа.
 
 **Доступные статусы:**
-- `pending` - Ожидает обработки
-- `process` - В обработке
-- `delivering` - Доставляется
-- `completed` - Завершён
-- `rejected` - Отклонён
+- `new` - Новый
+- `picking` - Собирается
+- `on_the_way` - В пути
+- `delivered` - Доставлен
+- `rejected` - Отменён
+- `cancelled` - Отменён пользователем
 
-**Примечание:** При переходе в статус `completed` автоматически уменьшается количество товаров на складе.
+**Примечание:** При переходе в статус `delivered` автоматически уменьшается количество товаров на складе.
 ''',
     request={
         'application/json': {
@@ -220,9 +236,9 @@ class OrderAddCourierView(APIView):
             'properties': {
                 'status': {
                     'type': 'string',
-                    'enum': ['pending', 'process', 'delivering', 'completed', 'rejected'],
+                    'enum': ['new', 'picking', 'on_the_way', 'delivered', 'rejected', 'cancelled'],
                     'description': 'Новый статус заказа',
-                    'example': 'delivering'
+                    'example': 'on_the_way'
                 },
             },
             'required': ['status'],
@@ -248,7 +264,7 @@ class OrderStatusChangeView(APIView):
         order.status = new_status
         order.save()
 
-        if previous_status != 'completed' and new_status == 'completed':
+        if previous_status != OrderStatus.DELIVERED.value and new_status == OrderStatus.DELIVERED.value:
             products_qs = OrderProduct.objects.select_related('product').filter(order=order)
             for op in products_qs:
                 if op.product:
@@ -256,6 +272,48 @@ class OrderStatusChangeView(APIView):
                         quantity=F('quantity') - op.quantity
                     )
 
+        return Response(OrderListSerializer(order, context={'request': request}).data)
+
+
+# ========== Finalize Pricing (admin/operator) ==========
+
+@extend_schema(
+    tags=['Заказы'],
+    summary='Финализировать сумму заказа (admin/operator)',
+    description='Admin/Operator kiritadigan yakuniy summa. Refund (qaytim) hisoblanadi: max(estimated_total - final_total, 0).',
+    request={
+        'application/json': {
+            'type': 'object',
+            'properties': {
+                'final_total': {'type': 'number', 'example': 110000},
+            },
+            'required': ['final_total'],
+        }
+    },
+)
+class OrderFinalizePricingView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def patch(self, request, pk):
+        if not user_is_staff(request.user) or user_is_courier(request.user):
+            return Response({'detail': 'Доступ запрещён'}, status=status.HTTP_403_FORBIDDEN)
+
+        serializer = FinalizePricingSerializer(data=request.data)
+        if not serializer.is_valid():
+            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            order = Order.objects.get(pk=pk)
+        except Order.DoesNotExist:
+            return Response({'detail': 'Не найден'}, status=status.HTTP_404_NOT_FOUND)
+
+        final_total = serializer.validated_data['final_total']
+        # Ensure pricing is up-to-date
+        compute_order_pricing(order)
+        order.final_total = final_total
+        diff = (order.estimated_total - final_total).quantize(Decimal('0.01'))
+        order.refund_amount = diff if diff > 0 else Decimal('0.00')
+        order.save()
         return Response(OrderListSerializer(order, context={'request': request}).data)
 
 
@@ -304,6 +362,50 @@ class OrderListView(APIView):
         if user_id:
             qs = qs.filter(user_id=user_id)
 
+        return Response(OrderListSerializer(qs, many=True, context={'request': request}).data)
+
+
+# ========== Courier: My assigned orders ==========
+
+@extend_schema(
+    tags=['Заказы'],
+    summary='Мои заказы (курьер)',
+    parameters=[
+        OpenApiParameter(name='status', type=OpenApiTypes.STR, description='new, picking, on_the_way, delivered, rejected, cancelled'),
+    ],
+)
+class CourierMyOrdersView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        if not user_is_courier(request.user):
+            return Response({'detail': 'Доступ запрещён'}, status=status.HTTP_403_FORBIDDEN)
+
+        qs = Order.objects.filter(order_couriers__courier=request.user).order_by('-created_at').distinct()
+        status_filter = request.query_params.get('status')
+        if status_filter:
+            qs = qs.filter(status=status_filter)
+        return Response(OrderListSerializer(qs, many=True, context={'request': request}).data)
+
+
+@extend_schema(
+    tags=['Заказы'],
+    summary='Активные заказы (для персонала/курьера)',
+    parameters=[
+        OpenApiParameter(name='status', type=OpenApiTypes.STR),
+    ],
+)
+class ActiveOrdersView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        if not user_is_staff(request.user):
+            return Response({'detail': 'Доступ запрещён'}, status=status.HTTP_403_FORBIDDEN)
+
+        qs = Order.objects.filter(status__in=OrderStatus.active_statuses()).order_by('-created_at')
+        status_filter = request.query_params.get('status')
+        if status_filter:
+            qs = qs.filter(status=status_filter)
         return Response(OrderListSerializer(qs, many=True, context={'request': request}).data)
 
 
@@ -370,7 +472,7 @@ class OrderDetailView(APIView):
             return Response({'detail': 'Не найден'}, status=status.HTTP_404_NOT_FOUND)
 
         if not order.can_update_or_delete:
-            return Response({'detail': 'Обновление возможно только при статусе pending'}, status=status.HTTP_400_BAD_REQUEST)
+            return Response({'detail': 'Обновление возможно только при статусе new'}, status=status.HTTP_400_BAD_REQUEST)
 
         serializer = OrderUpdateSerializer(data=request.data, partial=True)
         if not serializer.is_valid():
@@ -407,6 +509,12 @@ class OrderDetailView(APIView):
                 order.long = v['long']
             if 'address' in v:
                 order.address = v['address']
+            if 'entrance' in v:
+                order.entrance = v['entrance'] or ''
+            if 'apartment' in v:
+                order.apartment = v['apartment'] or ''
+            if 'comment' in v:
+                order.comment = v['comment'] or ''
             if 'products_data' in v:
                 order.order_products.all().delete()
                 for item in v['products_data']:
@@ -416,6 +524,7 @@ class OrderDetailView(APIView):
                         quantity=item['quantity'],
                         total_price=item['total_price'],
                     )
+            compute_order_pricing(order)
             order.save()
 
         return Response(OrderListSerializer(order, context={'request': request}).data)
@@ -427,7 +536,7 @@ class OrderDetailView(APIView):
             return Response({'detail': 'Не найден'}, status=status.HTTP_404_NOT_FOUND)
 
         if not order.can_update_or_delete:
-            return Response({'detail': 'Удаление возможно только при статусе pending'}, status=status.HTTP_400_BAD_REQUEST)
+            return Response({'detail': 'Удаление возможно только при статусе new'}, status=status.HTTP_400_BAD_REQUEST)
 
         order.delete()
         return Response(status=status.HTTP_204_NO_CONTENT)
@@ -474,7 +583,7 @@ class StatsOverviewView(APIView):
         )
         total_customers = orders_qs.values('user').distinct().count()
 
-        revenue_qs = OrderProduct.objects.filter(order__status='completed')
+        revenue_qs = OrderProduct.objects.filter(order__status=OrderStatus.DELIVERED.value)
         if date_from:
             revenue_qs = revenue_qs.filter(order__created_at__date__gte=date_from)
         if date_to:
@@ -557,7 +666,7 @@ class ProductStatsView(APIView):
         date_from = parse_date(date_from_str) if date_from_str else None
         date_to = parse_date(date_to_str) if date_to_str else None
 
-        op_qs = OrderProduct.objects.filter(order__status='completed')
+        op_qs = OrderProduct.objects.filter(order__status=OrderStatus.DELIVERED.value)
         if date_from:
             op_qs = op_qs.filter(order__created_at__date__gte=date_from)
         if date_to:

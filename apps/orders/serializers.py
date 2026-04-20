@@ -92,18 +92,23 @@ class OrderCreateSerializer(serializers.Serializer):
         error_messages=_REQUIRED,
     )
     lat = serializers.DecimalField(
-        required=False, 
+        required=True, 
         max_digits=10, 
         decimal_places=7, 
-        allow_null=True
+        allow_null=False,
+        error_messages=_REQUIRED,
     )
     long = serializers.DecimalField(
-        required=False, 
+        required=True, 
         max_digits=10, 
         decimal_places=7, 
-        allow_null=True
+        allow_null=False,
+        error_messages=_REQUIRED,
     )
-    address = serializers.CharField(required=False, allow_blank=True, max_length=1000)
+    address = serializers.CharField(required=True, allow_blank=False, max_length=1000, error_messages=_REQUIRED)
+    entrance = serializers.CharField(required=False, allow_blank=True, allow_null=True, max_length=50)
+    apartment = serializers.CharField(required=False, allow_blank=True, allow_null=True, max_length=50)
+    comment = serializers.CharField(required=False, allow_blank=True, allow_null=True, max_length=5000)
 
     def validate_products_data(self, value):
         if not value:
@@ -146,6 +151,9 @@ class OrderUpdateSerializer(serializers.Serializer):
         allow_null=True
     )
     address = serializers.CharField(required=False, allow_blank=True, max_length=1000)
+    entrance = serializers.CharField(required=False, allow_blank=True, allow_null=True, max_length=50)
+    apartment = serializers.CharField(required=False, allow_blank=True, allow_null=True, max_length=50)
+    comment = serializers.CharField(required=False, allow_blank=True, allow_null=True, max_length=5000)
 
     def validate_products_data(self, value):
         if value is not None:
@@ -183,8 +191,12 @@ class OrderListSerializer(serializers.ModelSerializer):
     class Meta:
         model = Order
         fields = [
-            'id', 'user_data', 'lat', 'long', 'address', 'status', 'status_display',
-            'total_amount', 'order_products', 'order_couriers', 'created_at', 'updated_at',
+            'id', 'user_data', 'lat', 'long', 'address', 'entrance', 'apartment', 'comment', 'status', 'status_display',
+            'total_amount',
+            'products_subtotal', 'service_fee_percent', 'service_fee_amount',
+            'delivery_fee', 'packing_fee', 'estimated_total',
+            'final_total', 'refund_amount',
+            'order_products', 'order_couriers', 'created_at', 'updated_at',
         ]
 
     def get_user_data(self, obj) -> Optional[Dict]:
@@ -238,3 +250,7 @@ class StatusChangeSerializer(serializers.Serializer):
         required=True,
         error_messages=_REQUIRED,
     )
+
+
+class FinalizePricingSerializer(serializers.Serializer):
+    final_total = serializers.DecimalField(required=True, max_digits=14, decimal_places=2, min_value=Decimal('0.00'))

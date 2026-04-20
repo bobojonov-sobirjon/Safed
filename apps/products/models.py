@@ -133,6 +133,14 @@ class Products(TranslatableModel):
         blank=True,
         unique=True
     )
+
+    shelf_location = models.CharField(
+        max_length=50,
+        verbose_name='Место на полке',
+        null=True,
+        blank=True,
+        db_index=True,
+    )
     
     translations = TranslatedFields(
         name=models.CharField(
@@ -250,6 +258,7 @@ class Products(TranslatableModel):
         ordering = ['-created_at']
         indexes = [
             models.Index(fields=['is_active']),
+            models.Index(fields=['shelf_location']),
         ]
 
     def __str__(self) -> str:

@@ -238,7 +238,7 @@ class ProductListSerializer(serializers.ModelSerializer):
     class Meta:
         model = Products
         fields = [
-            'id', 'translations', 'badge', 'unit', 'quantity', 'price',
+            'id', 'translations', 'badge', 'unit', 'shelf_location', 'quantity', 'price',
             'price_discount', 'discount_percentage', 'is_discount', 'is_active',
             'category', 'barcodes', 'images', 'is_favourite', 'created_at', 'updated_at',
         ]
@@ -326,6 +326,7 @@ class ProductCreateSerializer(serializers.Serializer):
         allow_null=True
     )
     barcode_number = serializers.CharField(required=False, allow_blank=True, allow_null=True)
+    shelf_location = serializers.CharField(required=False, allow_blank=True, allow_null=True, max_length=50)
 
     def validate_translations(self, value):
         if value is not None and not isinstance(value, dict):
