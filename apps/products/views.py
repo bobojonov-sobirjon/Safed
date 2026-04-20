@@ -509,7 +509,8 @@ class ProductListCreateView(APIView):
                     'discount_percentage': {'type': 'integer', 'description': 'Процент скидки', 'example': 20},
                     'is_discount': {'type': 'boolean', 'description': 'Есть ли скидка', 'example': True},
                     'is_active': {'type': 'boolean', 'description': 'Активен ли продукт', 'example': True},
-                    'images': {'type': 'array', 'items': {'type': 'string', 'format': 'binary'}, 'description': 'Новые изображения (заменят старые)'},
+                    'replace_images': {'type': 'boolean', 'description': 'Если true — новые изображения заменят старые. Если false/не указано — добавятся к текущим.', 'example': False},
+                    'images': {'type': 'array', 'items': {'type': 'string', 'format': 'binary'}, 'description': 'Изображения продукта (по умолчанию добавятся, а не заменят)'},
                 },
             }
         },
@@ -557,7 +558,15 @@ class ProductDetailView(APIView):
         if 'translations' in v:
             _apply_product_translations(product, v['translations'])
         if request.FILES.getlist('images'):
-            product.images.all().delete()
+            # Default behavior: append new images and keep old ones.
+            # To replace existing images, pass replace_images=true (form field or query param).
+            replace_images_flag = request.data.get('replace_images', None)
+            if replace_images_flag is None:
+                replace_images_flag = request.query_params.get('replace_images', None)
+            replace_images = str(replace_images_flag).lower() in ('true', '1', 'yes', 'y', 'on')
+
+            if replace_images:
+                product.images.all().delete()
             for img in request.FILES.getlist('images'):
                 ProductImage.objects.create(product=product, image=img)
 
