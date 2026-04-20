@@ -30,7 +30,7 @@ api_v1_patterns = [
 
 urlpatterns = [
     # Admin
-    path('admin/', admin.site.urls),
+    # path('admin/', admin.site.urls),
     
     # API Documentation
     path('schema/', custom_schema_view, name='schema'),

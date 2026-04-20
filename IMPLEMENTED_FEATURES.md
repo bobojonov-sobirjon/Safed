@@ -1,159 +1,192 @@
-# Safed Backend — qo‘shilgan funksiyalar (2026-04-20)
+# Safed Backend — Frontend uchun API qo‘llanma (2026-04-20)
 
-Bu hujjat siz so‘ragan funksiyalar bo‘yicha **hozirgi holat**ni va men qo‘shgan o‘zgarishlarni jamlaydi.
+Bu fayl frontend (User/Admin/Courier) uchun: **qaysi ekranda qaysi endpoint chaqiriladi**, **qanday request yuboriladi**, **response’dan qaysi fieldlar ishlatiladi**.
 
-> Eslatma: `README.md` dagi order statuslar (`pending/process/...`) endi eskirdi. Hozirgi statuslar quyida.
-
----
-
-## 1) Product search (qidiruv)
-
-### Qo‘shildi
-- `GET /api/products/?q=...`
-
-### Qidiruv qamrovi
-- `Products.unique_id` (icontains)
-- `ProductBarcode.barcode` (icontains)
-- `ProductsTranslation.name` (icontains)
-- `ProductsTranslation.description` (icontains)
-
-### Qo‘shimcha mavjud filterlar (oldindan bor edi)
-- `category`, `is_active`, `limit`, `offset`
+> `README.md` dagi eski order statuslar (`pending/process/...`) endi ishlatilmaydi. Hozirgi statuslar: `new`, `picking`, `on_the_way`, `delivered`, `rejected`, `cancelled`.
 
 ---
 
-## 2) Admin: active buyurtmalar + statuslarni o‘zgartirish (yangi/yig‘ilyapti/yo‘lda/...)
+## 1) Product (User ekranlari)
 
-### Statuslar (yangilandi)
-`apps/core/enums.py` dagi `OrderStatus` endi quyidagicha:
-- `new` — **yangi**
-- `picking` — **yig‘ilyapti**
-- `on_the_way` — **yo‘lda**
-- `delivered` — **yetkazildi**
-- `rejected` — **bekor qilindi (admin/operator)**
-- `cancelled` — **bekor qilindi (user)**
+### 1.1) Product list (asosiy katalog)
+- **Endpoint**: `GET /api/v1/products/`
+- **Query**:
+  - `limit`, `offset`
+  - `category` (id)
+  - `is_active` (true/false)
+- **Response (har product)**: `ProductListSerializer`
+  - **UI uchun**:
+    - `translations` → `name/description/...` (uz/ru/en)
+    - `price`, `price_discount`, `is_discount`, `discount_percentage`
+    - `quantity`, `is_active`
+    - `images[]`
+    - `barcodes[]`
+    - `category`
+    - `is_favourite`
+  - **admin yig‘ish uchun**:
+    - `shelf_location` (masalan `A-32`)
 
-### Status o‘zgartirish endpoint (bor edi, yangilandi)
-- `PATCH /api/orders/<id>/status/`
-  - body: `{ "status": "picking" }` va hokazo
+### 1.2) Product search (qidiruv)
+- **Endpoint**: `GET /api/v1/products/?q=...`
+- **Qidiradi**:
+  - `unique_id`
+  - `barcodes.barcode`
+  - `translations.name`
+  - `translations.description`
 
-### Active orderlar ro‘yxati (qo‘shildi)
-- `GET /api/orders/active/` (staff uchun)
-
-### Order ichidagi tovarlar (oldindan ham bor edi)
-`OrderListSerializer` ichida `order_products` bor:
-- quantity
-- unit_price
-- total_price
-- product detail (name/translation, rasm, unit, va h.k.)
-
----
-
-## 3) Narx: +10% servis, dostavka rule, paket/yig‘ish fixed fee, admin yakuniy summa, qaytim
-
-### Qo‘shildi: fee sozlamalari (admin paneldan)
-1) **`OrderFeeSettings`** (singleton)
-- `service_fee_percent` (default **10%**)
-- `packing_fee_amount` (masalan **5000**)
-
-2) **`DeliveryFeeRule`**
-Subtotal (tovarlar summasi) bo‘yicha delivery fee:
-- `min_order_amount`
-- `max_order_amount` (bo‘sh bo‘lsa +inf)
-- `fee_amount`
-- `is_active`
-
-### Qo‘shildi: order pricing snapshot fieldlar
-`Order` modeliga qo‘shilgan:
-- `products_subtotal`
-- `service_fee_percent`
-- `service_fee_amount`
-- `delivery_fee`
-- `packing_fee`
-- `estimated_total`
-- `final_total` (admin kiritadi)
-- `refund_amount`
-
-### Hisoblash qachon ishlaydi
-- Order create paytida (`POST /api/orders/`) pricing hisoblanadi.
-- Order update paytida (`PUT /api/orders/<id>/`) pricing qayta hisoblanadi.
-
-### Admin yakuniy summa kiritishi (qo‘shildi)
-- `PATCH /api/orders/<id>/finalize-pricing/`
-  - body: `{ "final_total": 110000 }`
-  - `refund_amount` hisob: `max(estimated_total - final_total, 0)`
-
-> Payment (userdan pul yechish/qaytarish) integratsiyasi bu repoda yo‘q, bu endpoint faqat **hisob-kitob** va “qaytim miqdori”ni chiqarib beradi.
+### 1.3) Product detail
+- **Endpoint**: `GET /api/v1/products/<id>/`
+- **Response**: `ProductListSerializer`
 
 ---
 
-## 4) Order create: lat/lon majburiy, podyez/uy raqami/izoh ixtiyoriy
+## 2) Order (User ekranlari)
 
-### O‘zgardi (majburiy qilindi)
-- `POST /api/orders/` endi quyidagilarni **majburiy** talab qiladi:
-  - `lat`
-  - `long`
-  - `address`
+### 2.1) Order create (checkout)
+- **Endpoint**: `POST /api/v1/orders/`
+- **Body (JSON)**:
+  - **majburiy**:
+    - `products_data`: `[{ product_id, quantity, total_price }]`
+    - `lat`, `long`, `address`
+  - **ixtiyoriy**:
+    - `entrance` (podyezd)
+    - `apartment` (uy/xonadon)
+    - `comment` (izoh)
+- **Response**: `OrderListSerializer`
+  - **order**: `id`, `status`, `status_display`
+  - **manzil**: `address`, `lat`, `long`, `entrance`, `apartment`, `comment`
+  - **tovarlar**: `order_products[]` (ichida `product` detail ham bor)
+  - **pricing**:
+    - `products_subtotal`
+    - `service_fee_percent` (default 10)
+    - `service_fee_amount`
+    - `delivery_fee`
+    - `packing_fee`
+    - `estimated_total`
+    - `final_total` (admin kiritmaguncha null bo‘lishi mumkin)
+    - `refund_amount`
 
-### Qo‘shildi (ixtiyoriy maydonlar)
-- `entrance` — podyezd
-- `apartment` — uy/xonadon
-- `comment` — qo‘shimcha izoh
+### 2.2) Mening orderlarim
+- **Endpoint**: `GET /api/v1/orders/my/`
+- **Query (ixtiyoriy)**: `status=new|picking|on_the_way|delivered|rejected|cancelled`
+- **Response**: `OrderListSerializer[]`
 
-Bu fieldlar `OrderListSerializer` javobida ham qaytadi.
-
----
-
-## 5) Driver (Courier) uchun orderlar: manzil, order id, user raqami
-
-### Qo‘shildi
-- `GET /api/orders/courier/my/`
-  - faqat courier guruhidagi userlar uchun
-
-### Javobda kerakli ma’lumotlar bor
-- `id` (order id)
-- `address`, `lat`, `long`
-- `user_data.phone` (user raqami)
-
----
-
-## 6) Product “joy/polka” (yig‘ishda ko‘rish uchun)
-
-### Qo‘shildi
-- `Products.shelf_location` (masalan: `A-32`)
-
-### API’da chiqadi
-- `ProductListSerializer` endi `shelf_location` ni ham qaytaradi.
-- Product create/update orqali ham kiritish mumkin (`ProductCreateSerializer`ga qo‘shildi).
+### 2.3) Order detail
+- **Endpoint**: `GET /api/v1/orders/<id>/`
+- **Response**: `OrderListSerializer`
 
 ---
 
-## 7) Admin panel (Django admin) — orders/products/settings
+## 3) Admin/Operator ekranlari (orderlar bilan ishlash)
 
-### Accounts admin tuzatildi
-- `apps/accounts/admin.py` da `list_display` ichida `groups` M2M bo‘lgani uchun `admin.E109` xato bo‘layotgan edi.
-- Endi `groups_display()` orqali group nomlari string ko‘rinishda chiqadi.
+### 3.1) Active orderlar (yig‘iladigan/yo‘ldagi)
+- **Endpoint**: `GET /api/v1/orders/active/`
+- **Query (ixtiyoriy)**: `status=...`
+- **Response**: `OrderListSerializer[]`
+- **Yig‘ish ekranida ko‘rsatish**:
+  - `order_products[]` ichida:
+    - `quantity`
+    - `product.translations.name` (nomi)
+    - `product.unit` (o‘lchov birligi)
+    - `product.shelf_location` (A-32)
 
-### Orders admin yaxshilandi
-- `Order` admin’da:
-  - list_display: status, subtotal/fee/estimated/final/refund
-  - search: user phone, address
-  - inline: `OrderProduct` va `OrderCourier`
-- `DeliveryFeeRule` va `OrderFeeSettings` admin paneldan boshqariladi.
+### 3.2) Barcha orderlar (admin)
+- **Endpoint**: `GET /api/v1/orders/all/`
+- **Query**:
+  - `status=...`
+  - `user=<user_id>`
 
-### Products admin qo‘shildi
-- `Products`, `Badge`, `Unit` admin panelga ulandi.
-- `Products` ichida:
-  - search: unique_id, shelf_location, translations name, barcode
-  - inline: images, barcodes
+### 3.3) Status o‘zgartirish (admin/operator/courier)
+- **Endpoint**: `PATCH /api/v1/orders/<id>/status/`
+- **Body**: `{ "status": "picking" }`
+- **Statuslar**:
+  - `new` → `picking` → `on_the_way` → `delivered`
+  - `rejected`, `cancelled` (holatga qarab)
+
+### 3.4) Admin yakuniy narx kiritishi (order yig‘ilgach)
+- **Endpoint**: `PATCH /api/v1/orders/<id>/finalize-pricing/`
+- **Body**: `{ "final_total": 110000 }`
+- **Natija**:
+  - `final_total` set bo‘ladi
+  - `refund_amount = max(estimated_total - final_total, 0)`
+
+> Muhim: bu endpoint faqat **hisob-kitob** qiladi. Real payment/refund (pul qaytarish) integratsiyasi alohida bo‘ladi.
 
 ---
 
-## 8) Migration va system check
+## 4) Courier (driver) ekranlari
 
-### Qo‘shilgan migrationlar
-- `apps/orders/migrations/0004_orderfeesettings_order_apartment_order_comment_and_more.py`
-- `apps/products/migrations/0006_products_shelf_location_and_more.py`
+### 4.1) Menga biriktirilgan orderlar
+- **Endpoint**: `GET /api/v1/orders/courier/my/`
+- **Query (ixtiyoriy)**: `status=...`
+- **Response**: `OrderListSerializer[]`
+- **Courierga kerakli fieldlar**:
+  - `id`
+  - `address`, `lat`, `long`
+  - `user_data.phone`
 
-### Tekshiruv
-- `python manage.py check` — **xatosiz**
+---
+
+## 5) Chat (REST + WebSocket)
+
+Chat API `apps/realtime` orqali ishlaydi. HTTP endpointlar `/api/v1/` ostida, WebSocket esa alohida `/ws/` ostida.
+
+### 5.1) Chat room yaratish / ro‘yxat
+- **Mening chatlarim**: `GET /api/v1/chat/rooms/`
+- **Order uchun chat yaratish** (agar oldin yaratilgan bo‘lsa o‘sha room qaytadi):
+  - `POST /api/v1/chat/rooms/`
+  - body: `{ "order_id": 123 }`
+
+### 5.2) Order bo‘yicha room topish
+- `GET /api/v1/chat/orders/<order_id>/`
+
+### 5.3) Xabarlar tarixini olish
+- `GET /api/v1/chat/rooms/<room_id>/messages/`
+
+### 5.4) WebSocket orqali xabar yuborish (real-time chat)
+- **WS URL**: `ws://<HOST>/ws/chat/<room_id>/<ACCESS_TOKEN>/`
+  - `ACCESS_TOKEN` — login bo‘lgandan keyin olingan JWT access token
+- **Yuboriladigan message (misol JSON)**:
+  - `{ "message": "Assalomu alaykum" }`
+
+### 5.5) Notification WebSocket (real-time notification)
+- **WS URL**: `ws://<HOST>/ws/notifications/<ACCESS_TOKEN>/`
+- Qo‘shimcha REST:
+  - `GET /api/v1/notifications/`
+  - `GET /api/v1/notifications/unread/`
+  - `PATCH /api/v1/notifications/read-all/`
+  - `PATCH /api/v1/notifications/<id>/read/`
+
+---
+
+## 6) Admin API — fee sozlash (Django admin YO‘Q)
+
+### 6.1) 10% servis va paket/yig‘ish (fixed)
+- **Django admin emas, API orqali** (faqat **Super Admin** / **Admin**):
+  - `GET /api/v1/admin/fees/settings/`
+  - `PATCH /api/v1/admin/fees/settings/`
+    - body: `{ "service_fee_percent": 10, "packing_fee_amount": 5000 }`
+
+### 6.2) Dostavka narxi (rule)
+- **Django admin emas, API orqali** (faqat **Super Admin** / **Admin**):
+  - `GET /api/v1/admin/fees/delivery-rules/` (list)
+  - `POST /api/v1/admin/fees/delivery-rules/` (create)
+    - body: `{ "min_order_amount": 0, "max_order_amount": 100000, "fee_amount": 10000, "is_active": true }`
+  - `PATCH /api/v1/admin/fees/delivery-rules/<id>/` (update)
+  - `DELETE /api/v1/admin/fees/delivery-rules/<id>/` (delete)
+
+  **Misol rule lar**:
+  - 0 .. 100000 → 10000
+  - 100000 .. 200000 → 3000
+  - 300000 .. +inf → 0
+
+---
+
+## 7) Qisqa “frontend checklist”
+
+- **Search**: product list ekranda `q` query qo‘shing.
+- **Checkout**: order create’da `lat/long/address` majburiy yuboring; qolganlari ixtiyoriy.
+- **Admin picking UI**: `orders/active` dan order olib, `order_products[].product.shelf_location` ko‘rsating.
+- **Pricing UI**:
+  - Userga: `estimated_total` ko‘rsating
+  - Admin finalize qilgach: `final_total` va `refund_amount` ko‘rsating

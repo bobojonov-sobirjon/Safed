@@ -11,4 +11,9 @@ urlpatterns = [
     path('orders/<int:pk>/add-courier/', views.OrderAddCourierView.as_view(), name='order-add-courier'),
     path('orders/<int:pk>/status/', views.OrderStatusChangeView.as_view(), name='order-status'),
     path('orders/<int:pk>/finalize-pricing/', views.OrderFinalizePricingView.as_view(), name='order-finalize-pricing'),
+
+    # Admin Fees (API, for Super Admin/Admin)
+    path('admin/fees/settings/', views.OrderFeeSettingsView.as_view(), name='order-fee-settings'),
+    path('admin/fees/delivery-rules/', views.DeliveryFeeRuleListCreateView.as_view(), name='delivery-fee-rule-list-create'),
+    path('admin/fees/delivery-rules/<int:pk>/', views.DeliveryFeeRuleDetailView.as_view(), name='delivery-fee-rule-detail'),
 ]

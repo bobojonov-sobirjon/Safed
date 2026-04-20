@@ -22,7 +22,7 @@ def _period_to_iso(p):
         return p.isoformat()
     return str(p)
 
-from .models import Order, OrderProduct, OrderCourier
+from .models import Order, OrderProduct, OrderCourier, DeliveryFeeRule, OrderFeeSettings
 from apps.products.models import Products
 from .serializers import (
     OrderListSerializer,
@@ -31,6 +31,8 @@ from .serializers import (
     AddCourierSerializer,
     StatusChangeSerializer,
     FinalizePricingSerializer,
+    OrderFeeSettingsSerializer,
+    DeliveryFeeRuleSerializer,
 )
 from apps.core.enums import OrderStatus, UserGroup
 from .pricing import compute_order_pricing
@@ -50,6 +52,16 @@ def user_is_staff(user):
 
 def user_is_super_admin(user):
     return user.groups.filter(name='Super Admin').exists()
+
+
+def user_is_admin(user):
+    return user.groups.filter(name__in=UserGroup.admin_groups()).exists()
+
+
+def ensure_admin_or_super_admin(request):
+    if not user_is_admin(request.user):
+        return Response({'detail': 'Доступ запрещён'}, status=status.HTTP_403_FORBIDDEN)
+    return None
 
 
 # ========== Create Order ==========
@@ -727,3 +739,94 @@ class ProductStatsView(APIView):
             },
             'sales_timeseries': sales_ts,
         })
+
+
+# =============================================================================
+# Admin API: Fee settings & delivery rules (no Django admin required)
+# =============================================================================
+
+@extend_schema(
+    tags=['Admin Fees'],
+    summary='Fee settings (get/update)',
+    description='Faqat Super Admin yoki Admin. 10% servis va packing fee shu yerda boshqariladi.',
+)
+class OrderFeeSettingsView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        denied = ensure_admin_or_super_admin(request)
+        if denied:
+            return denied
+        obj, _ = OrderFeeSettings.objects.get_or_create(pk=1)
+        return Response(OrderFeeSettingsSerializer(obj).data)
+
+    def patch(self, request):
+        denied = ensure_admin_or_super_admin(request)
+        if denied:
+            return denied
+        obj, _ = OrderFeeSettings.objects.get_or_create(pk=1)
+        serializer = OrderFeeSettingsSerializer(obj, data=request.data, partial=True)
+        if not serializer.is_valid():
+            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+        serializer.save()
+        return Response(serializer.data)
+
+
+@extend_schema(
+    tags=['Admin Fees'],
+    summary='Delivery fee rules (list/create)',
+    description='Faqat Super Admin yoki Admin. Dostavka rule larini boshqarish.',
+)
+class DeliveryFeeRuleListCreateView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        denied = ensure_admin_or_super_admin(request)
+        if denied:
+            return denied
+        qs = DeliveryFeeRule.objects.all().order_by('min_order_amount', 'id')
+        return Response(DeliveryFeeRuleSerializer(qs, many=True).data)
+
+    def post(self, request):
+        denied = ensure_admin_or_super_admin(request)
+        if denied:
+            return denied
+        serializer = DeliveryFeeRuleSerializer(data=request.data)
+        if not serializer.is_valid():
+            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+        obj = serializer.save()
+        return Response(DeliveryFeeRuleSerializer(obj).data, status=status.HTTP_201_CREATED)
+
+
+@extend_schema(
+    tags=['Admin Fees'],
+    summary='Delivery fee rule (update/delete)',
+    description='Faqat Super Admin yoki Admin.',
+)
+class DeliveryFeeRuleDetailView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def patch(self, request, pk):
+        denied = ensure_admin_or_super_admin(request)
+        if denied:
+            return denied
+        try:
+            obj = DeliveryFeeRule.objects.get(pk=pk)
+        except DeliveryFeeRule.DoesNotExist:
+            return Response({'detail': 'Не найден'}, status=status.HTTP_404_NOT_FOUND)
+        serializer = DeliveryFeeRuleSerializer(obj, data=request.data, partial=True)
+        if not serializer.is_valid():
+            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+        serializer.save()
+        return Response(serializer.data)
+
+    def delete(self, request, pk):
+        denied = ensure_admin_or_super_admin(request)
+        if denied:
+            return denied
+        try:
+            obj = DeliveryFeeRule.objects.get(pk=pk)
+        except DeliveryFeeRule.DoesNotExist:
+            return Response({'detail': 'Не найден'}, status=status.HTTP_404_NOT_FOUND)
+        obj.delete()
+        return Response(status=status.HTTP_204_NO_CONTENT)

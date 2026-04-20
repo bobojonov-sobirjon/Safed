@@ -6,7 +6,7 @@ from decimal import Decimal
 from typing import Dict, Any, List, Optional
 from rest_framework import serializers
 
-from .models import Order, OrderProduct, OrderCourier
+from .models import Order, OrderProduct, OrderCourier, DeliveryFeeRule, OrderFeeSettings
 from apps.products.models import Products
 from apps.products.serializers import ProductListSerializer
 from apps.accounts.models import CustomUser
@@ -254,3 +254,21 @@ class StatusChangeSerializer(serializers.Serializer):
 
 class FinalizePricingSerializer(serializers.Serializer):
     final_total = serializers.DecimalField(required=True, max_digits=14, decimal_places=2, min_value=Decimal('0.00'))
+
+
+# =============================================================================
+# Fee Settings / Delivery Rules (Admin API)
+# =============================================================================
+
+class OrderFeeSettingsSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = OrderFeeSettings
+        fields = ['id', 'service_fee_percent', 'packing_fee_amount', 'updated_at']
+        read_only_fields = ['id', 'updated_at']
+
+
+class DeliveryFeeRuleSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = DeliveryFeeRule
+        fields = ['id', 'min_order_amount', 'max_order_amount', 'fee_amount', 'is_active', 'created_at']
+        read_only_fields = ['id', 'created_at']
