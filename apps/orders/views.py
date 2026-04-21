@@ -1,7 +1,7 @@
 from rest_framework import status
 from rest_framework.views import APIView
 from rest_framework.response import Response
-from rest_framework.permissions import IsAuthenticated
+from rest_framework.permissions import IsAuthenticated, AllowAny
 from drf_spectacular.utils import extend_schema, extend_schema_view, OpenApiParameter
 from drf_spectacular.types import OpenApiTypes
 
@@ -746,7 +746,10 @@ class ProductStatsView(APIView):
 # =============================================================================
 
 class OrderFeeSettingsView(APIView):
-    permission_classes = [IsAuthenticated]
+    def get_permissions(self):
+        if self.request.method == 'GET':
+            return [AllowAny()]
+        return [IsAuthenticated()]
 
     @extend_schema(
         tags=['Admin Fees'],
@@ -781,7 +784,10 @@ class OrderFeeSettingsView(APIView):
 
 
 class DeliveryFeeRuleListCreateView(APIView):
-    permission_classes = [IsAuthenticated]
+    def get_permissions(self):
+        if self.request.method == 'GET':
+            return [AllowAny()]
+        return [IsAuthenticated()]
 
     @extend_schema(
         tags=['Admin Fees'],
