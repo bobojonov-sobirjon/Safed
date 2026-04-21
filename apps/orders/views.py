@@ -745,14 +745,15 @@ class ProductStatsView(APIView):
 # Admin API: Fee settings & delivery rules (no Django admin required)
 # =============================================================================
 
-@extend_schema(
-    tags=['Admin Fees'],
-    summary='Fee settings (get/update)',
-    description='Faqat Super Admin yoki Admin. 10% servis va packing fee shu yerda boshqariladi.',
-)
 class OrderFeeSettingsView(APIView):
     permission_classes = [IsAuthenticated]
 
+    @extend_schema(
+        tags=['Admin Fees'],
+        summary='Fee settings (get)',
+        description='Faqat Super Admin yoki Admin. 10% servis va packing fee shu yerda boshqariladi.',
+        responses=OrderFeeSettingsSerializer,
+    )
     def get(self, request):
         denied = ensure_admin_or_super_admin(request)
         if denied:
@@ -760,6 +761,13 @@ class OrderFeeSettingsView(APIView):
         obj, _ = OrderFeeSettings.objects.get_or_create(pk=1)
         return Response(OrderFeeSettingsSerializer(obj).data)
 
+    @extend_schema(
+        tags=['Admin Fees'],
+        summary='Fee settings (update)',
+        description='Faqat Super Admin yoki Admin. 10% servis va packing fee shu yerda boshqariladi.',
+        request=OrderFeeSettingsSerializer,
+        responses=OrderFeeSettingsSerializer,
+    )
     def patch(self, request):
         denied = ensure_admin_or_super_admin(request)
         if denied:
@@ -772,14 +780,15 @@ class OrderFeeSettingsView(APIView):
         return Response(serializer.data)
 
 
-@extend_schema(
-    tags=['Admin Fees'],
-    summary='Delivery fee rules (list/create)',
-    description='Faqat Super Admin yoki Admin. Dostavka rule larini boshqarish.',
-)
 class DeliveryFeeRuleListCreateView(APIView):
     permission_classes = [IsAuthenticated]
 
+    @extend_schema(
+        tags=['Admin Fees'],
+        summary='Delivery fee rules (list)',
+        description='Faqat Super Admin yoki Admin. Dostavka rule larini boshqarish.',
+        responses=DeliveryFeeRuleSerializer(many=True),
+    )
     def get(self, request):
         denied = ensure_admin_or_super_admin(request)
         if denied:
@@ -787,6 +796,13 @@ class DeliveryFeeRuleListCreateView(APIView):
         qs = DeliveryFeeRule.objects.all().order_by('min_order_amount', 'id')
         return Response(DeliveryFeeRuleSerializer(qs, many=True).data)
 
+    @extend_schema(
+        tags=['Admin Fees'],
+        summary='Delivery fee rules (create)',
+        description='Faqat Super Admin yoki Admin. Dostavka rule larini boshqarish.',
+        request=DeliveryFeeRuleSerializer,
+        responses=DeliveryFeeRuleSerializer,
+    )
     def post(self, request):
         denied = ensure_admin_or_super_admin(request)
         if denied:
@@ -798,14 +814,16 @@ class DeliveryFeeRuleListCreateView(APIView):
         return Response(DeliveryFeeRuleSerializer(obj).data, status=status.HTTP_201_CREATED)
 
 
-@extend_schema(
-    tags=['Admin Fees'],
-    summary='Delivery fee rule (update/delete)',
-    description='Faqat Super Admin yoki Admin.',
-)
 class DeliveryFeeRuleDetailView(APIView):
     permission_classes = [IsAuthenticated]
 
+    @extend_schema(
+        tags=['Admin Fees'],
+        summary='Delivery fee rule (update)',
+        description='Faqat Super Admin yoki Admin.',
+        request=DeliveryFeeRuleSerializer,
+        responses=DeliveryFeeRuleSerializer,
+    )
     def patch(self, request, pk):
         denied = ensure_admin_or_super_admin(request)
         if denied:
@@ -820,6 +838,11 @@ class DeliveryFeeRuleDetailView(APIView):
         serializer.save()
         return Response(serializer.data)
 
+    @extend_schema(
+        tags=['Admin Fees'],
+        summary='Delivery fee rule (delete)',
+        description='Faqat Super Admin yoki Admin.',
+    )
     def delete(self, request, pk):
         denied = ensure_admin_or_super_admin(request)
         if denied:
