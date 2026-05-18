@@ -52,7 +52,12 @@ class CustomUser(AbstractUser):
         auto_now=True,
         verbose_name='Дата обновления'
     )
-    
+    loyalty_points = models.PositiveIntegerField(
+        default=0,
+        verbose_name='Баллы лояльности',
+        help_text='Списание при оформлении заказа; не более 50% суммы заказа (см. pricing).',
+    )
+
     objects = CustomUserManager()
 
     USERNAME_FIELD = 'phone'

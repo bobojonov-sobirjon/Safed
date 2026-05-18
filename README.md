@@ -19,6 +19,9 @@ Django asosidagi e-commerce mobil backend loyihasi.
 | **django-filter** | Qidiruv va filtrlash |
 | **JWT (SimpleJWT)** | Autentifikatsiya |
 | **Pillow** | Rasm qayta ishlash |
+| **Django Channels** | WebSocket (chat, bildirishnomalar, cash delivery) |
+| **Celery** | Fon vazifalar (ixtiyoriy; SMS, hisobot, va h.k.) |
+| **Redis** | Channel layer + Celery broker (production tavsiya) |
 
 ---
 
@@ -47,6 +50,14 @@ DB_USER=postgres
 DB_PASSWORD=your_password
 DB_HOST=localhost
 DB_PORT=5432
+
+# WebSocket (production — bir nechta Daphne instansiya uchun)
+CHANNEL_LAYERS_REDIS=true
+REDIS_URL=redis://localhost:6379/1
+
+# Celery (ixtiyoriy fon vazifalar)
+CELERY_BROKER_URL=redis://localhost:6379/2
+CELERY_RESULT_BACKEND=redis://localhost:6379/2
 ```
 
 ### 3. Ma'lumotlar bazasi
@@ -65,6 +76,148 @@ daphne -b 0.0.0.0 -p 9000 config.asgi:application
 ```
 
 Server: `http://127.0.0.1:9000` (HTTP va WebSocket birgalikda)
+
+**WebSocket (Postman / mobil):** server **Daphne** bilan ishlashi kerak. `runserver` ba’zan WS da `403` beradi.
+
+```bash
+daphne -b 127.0.0.1 -p 8000 config.asgi:application
+```
+
+Cash delivery WS:
+
+```
+ws://127.0.0.1:8000/ws/orders/delivery/?token=<ACCESS_JWT>
+```
+
+`.env`:
+
+```env
+WS_STRICT_ORIGIN=false
+DEBUG=True
+```
+
+Agar `403 Access denied` bo‘lsa — serverni qayta ishga tushiring, yangi JWT oling (`/api/auth/...`), `WS_STRICT_ORIGIN=false` qiling.
+
+---
+
+## Redis (WebSocket + Celery uchun)
+
+Productionda chat, bildirishnomalar va cash delivery WebSocketlari **Redis channel layer** ishlatadi.
+
+```bash
+# Docker
+docker run -d --name safed-redis -p 6379:6379 redis:7-alpine
+
+# yoki mahalliy redis-server
+```
+
+`.env` da:
+
+```env
+CHANNEL_LAYERS_REDIS=true
+REDIS_URL=redis://localhost:6379/1
+```
+
+> **Eslatma:** `CHANNEL_LAYERS_REDIS=false` bo‘lsa — faqat bitta Daphne jarayoni uchun `InMemoryChannelLayer` (development). Bir nechta worker yoki WS + HTTP alohida bo‘lsa Redis kerak.
+
+---
+
+## Celery (fon vazifalar)
+
+### Muhim: nima Celery, nima Channels?
+
+| Vazifa | Qanday ishlaydi |
+|--------|------------------|
+| Chat, push WS, cash `accept/reject` | **Django Channels** — `daphne` ichida, **Celery shart emas** |
+| SMS, email, og‘ir hisobot, kechikkan job | **Celery worker** — alohida jarayon |
+
+Cash QR tasdiqlash va realtime eventlar **to‘g‘ridan-to‘g‘ri Channels** orqali yuboriladi; ular uchun Celery ishga tushirish majburiy emas.
+
+### O‘rnatish
+
+```bash
+pip install -r requirements.txt
+# yoki faqat Celery
+pip install "celery[redis]>=5.3.0"
+```
+
+Redis broker allaqachon yuqoridagi `CELERY_BROKER_URL` bilan bog‘lanadi.
+
+### Ishga tushirish (3 ta terminal)
+
+**1-terminal — API + WebSocket (Daphne):**
+
+```bash
+env\Scripts\activate
+daphne -b 0.0.0.0 -p 9000 config.asgi:application
+```
+
+**2-terminal — Celery worker:**
+
+```bash
+env\Scripts\activate
+cd D:\Projects\Mobile Backend APPS\Safed
+
+# Linux / macOS
+celery -A config worker -l info
+
+# Windows (pool muammosi bo‘lmasligi uchun)
+celery -A config worker -l info --pool=solo
+```
+
+**3-terminal (ixtiyoriy) — rejalashtirilgan vazifalar (beat):**
+
+```bash
+celery -A config beat -l info
+```
+
+> `beat` faqat `periodic_task` / `CELERY_BEAT_SCHEDULE` bo‘lsa kerak. Hozir loyihada asosan `shared_task` misoli (`apps.core.tasks.ping`) bor.
+
+### Tekshirish
+
+```bash
+python manage.py shell
+```
+
+```python
+from apps.core.tasks import ping
+ping.delay()   # worker ishlayotgan bo‘lsa
+ping.apply()   # worker siz, sinxron
+```
+
+Worker logida `Received task: apps.core.tasks.ping` ko‘rinishi kerak.
+
+### Umumiy buyruqlar
+
+| Buyruq | Vazifa |
+|--------|--------|
+| `celery -A config worker -l info` | Vazifalarni bajaruvchi worker |
+| `celery -A config worker -l info --pool=solo` | Windows uchun |
+| `celery -A config beat -l info` | Vaqt bo‘yicha tasklar |
+| `celery -A config inspect active` | Faol tasklar |
+| `celery -A config purge` | Navbatni tozalash (ehtiyot!) |
+
+### Production (systemd misol)
+
+```ini
+# /etc/systemd/system/safed-celery.service
+[Service]
+WorkingDirectory=/var/www/safed
+EnvironmentFile=/var/www/safed/.env
+ExecStart=/var/www/safed/env/bin/celery -A config worker -l info --concurrency=4
+Restart=always
+```
+
+Daphne va Celery **alohida** servislar bo‘lishi kerak.
+
+### Xatoliklar
+
+| Muammo | Yechim |
+|--------|--------|
+| `Connection refused` Redis | `redis-server` yoki Docker redis ishga tushiring |
+| Windows da worker osilib qoladi | `--pool=solo` qo‘shing |
+| Task bajarilmaydi | Worker ishlayaptimi, `CELERY_BROKER_URL` to‘g‘rimi tekshiring |
+| WebSocket ishlamaydi | Celery emas — `CHANNEL_LAYERS_REDIS=true` va Daphne ishlating |
 
 ---
 

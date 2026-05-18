@@ -12,6 +12,9 @@ from rest_framework_simplejwt.exceptions import InvalidToken
 TOKEN_PATTERNS = [
     re.compile(r'^ws/chat/\d+/(?P<token>[^/]+)/?$'),
     re.compile(r'^ws/notifications/(?P<token>[^/]+)/?$'),
+    # ws/orders/delivery/?token=... — query; ws/orders/delivery/<jwt>/ — path
+    re.compile(r'^ws/orders/delivery/token=(?P<token>.+)$'),
+    re.compile(r'^ws/orders/delivery/(?P<token>[^/]+)/?$'),
 ]
 
 
@@ -33,7 +36,10 @@ class TokenAuthMiddleware:
         for pattern in TOKEN_PATTERNS:
             match = pattern.match(path)
             if match:
-                return match.group('token')
+                raw = match.group('token').strip()
+                if raw.lower().startswith('token='):
+                    raw = raw[6:]
+                return raw or None
         return None
 
     async def __call__(self, scope, receive, send):
@@ -45,12 +51,21 @@ class TokenAuthMiddleware:
         path = scope.get('path', '')
         token = self._extract_token_from_path(path)
 
-        # Fallback: query string ?token=...
+        # Query: ?token=...
         if not token and scope.get('query_string'):
             query_params = parse_qs(scope['query_string'].decode('utf-8'))
             tokens = query_params.get('token')
             if tokens:
                 token = tokens[0]
+
+        # Header: Authorization: Bearer <jwt> (Postman)
+        if not token:
+            for name, value in scope.get('headers', ()):
+                if name.lower() == b'authorization':
+                    raw = value.decode('utf-8', errors='ignore').strip()
+                    if raw.lower().startswith('bearer '):
+                        token = raw[7:].strip()
+                    break
 
         if token:
             try:

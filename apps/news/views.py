@@ -24,7 +24,11 @@ from .serializers import (
 @extend_schema(
     tags=['Посты'],
     summary='Список постов',
-    description='Фильтрация по дате (created_at) и is_active.',
+    description="""
+Лента постов/новостей для приложения. Публичный GET.
+
+**Фильтры:** `date_from`, `date_to` (по дате создания), `is_active` (true/false).
+""",
     parameters=[
         OpenApiParameter(name='date_from', type=OpenApiTypes.DATE, description='Дата от (YYYY-MM-DD)'),
         OpenApiParameter(name='date_to', type=OpenApiTypes.DATE, description='Дата до (YYYY-MM-DD)'),
@@ -55,6 +59,11 @@ class PostListView(APIView):
 @extend_schema(
     tags=['Посты'],
     summary='Получить пост по ID',
+    description="""
+Полная карточка поста: переводы (Parler), изображения, `is_active`, даты.
+
+Публичный доступ. **404** если пост не найден.
+""",
 )
 class PostDetailView(APIView):
     permission_classes = [AllowAny]
@@ -243,7 +252,11 @@ class PostImageListView(APIView):
         return Response(PostImageSerializer(queryset, many=True, context={'request': request}).data)
 
 
-@extend_schema(tags=['Изображения постов'], summary='Получить изображение по ID')
+@extend_schema(
+    tags=['Изображения постов'],
+    summary='Получить изображение по ID',
+    description='Одна запись медиа поста: URL файла, связь с `post_id`. Публичный доступ.',
+)
 class PostImageDetailView(APIView):
     permission_classes = [AllowAny]
 
@@ -327,7 +340,11 @@ class PostImageUpdateView(APIView):
         return Response(PostImageSerializer(img, context={'request': request}).data)
 
 
-@extend_schema(tags=['Изображения постов'], summary='Удалить изображение')
+@extend_schema(
+    tags=['Изображения постов'],
+    summary='Удалить изображение',
+    description='Физическое удаление файла изображения поста. Требуется JWT (админ/редактор). Ответ **204**.',
+)
 class PostImageDeleteView(APIView):
     permission_classes = [IsAuthenticated]
 

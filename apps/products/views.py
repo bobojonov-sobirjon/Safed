@@ -7,6 +7,8 @@ from rest_framework.pagination import LimitOffsetPagination
 from drf_spectacular.utils import extend_schema, extend_schema_view, OpenApiParameter, OpenApiExample
 from drf_spectacular.types import OpenApiTypes
 from django.db.models import Q
+import random
+import string
 
 from .models import Badge, Unit, Products, ProductBarcode, ProductImage, ProductSavedUser
 from .serializers import (
@@ -16,13 +18,17 @@ from .serializers import (
     UnitCreateUpdateSerializer,
     ProductListSerializer,
     ProductCreateSerializer,
+    ProductUnitOptionSerializer,
     ProductBarcodeSerializer,
     ProductBarcodeUpdateSerializer,
     ProductImageSerializer,
     ProductImageUpdateSerializer,
     ProductSavedUserSerializer,
 )
-from .services.barcode import generate_barcode_number, generate_barcode_image
+from .services import ProductService
+from .services.product_write import create_product_barcode
+from .openapi_product import PRODUCT_CREATE_DESCRIPTION, PRODUCT_UNIT_FORM_FIELDS
+from .product_unit_specs import product_unit_choices_payload, product_unit_openapi_description
 
 
 # ========== Badge CRUD ==========
@@ -273,6 +279,22 @@ class UnitDetailView(APIView):
         return Response(status=status.HTTP_204_NO_CONTENT)
 
 
+# ========== Product unit options ==========
+
+@extend_schema(
+    tags=['Products (Admin)'],
+    summary='Product unit: variantlar va mos maydonlar',
+    description=product_unit_openapi_description(),
+    responses={200: ProductUnitOptionSerializer(many=True)},
+)
+class ProductUnitOptionsView(APIView):
+    """Dropdown + qaysi maydonlar kerakligi (product_unit bo‘yicha)."""
+    permission_classes = [AllowAny]
+
+    def get(self, request):
+        return Response(product_unit_choices_payload())
+
+
 # ========== Product ==========
 
 def _parse_product_data(request):
@@ -319,63 +341,57 @@ def _parse_product_data(request):
                 data[key] = int(data[key])
             except (ValueError, TypeError):
                 data[key] = 0
+
+    if 'product_unit' in data and data['product_unit']:
+        data['product_unit'] = str(data['product_unit']).strip().lower()
+
+    if 'unit_amount' in data and data['unit_amount'] not in (None, ''):
+        from decimal import Decimal
+        try:
+            data['unit_amount'] = Decimal(str(data['unit_amount']))
+        except Exception:
+            data['unit_amount'] = Decimal('1')
+
     return data
 
 
-def _apply_product_translations(product, translations):
-    fields = ['name', 'description', 'composition', 'expiration_date', 'country', 'grammage']
-    for lang, trans in (translations or {}).items():
-        if isinstance(trans, dict) and lang in ('ru', 'uz', 'en'):
-            for f in fields:
-                if f in trans:
-                    product.set_current_language(lang)
-                    setattr(product, f, trans[f] if trans[f] is not None else '')
-            product.save()
-
-
-def _create_or_update_barcode(product, barcode_number=None):
-    if barcode_number is None or barcode_number == '':
-        barcode_number = generate_barcode_number()
-    img_file = generate_barcode_image(barcode_number)
-    pb = ProductBarcode.objects.create(product=product, barcode=barcode_number)
-    if img_file:
-        pb.barcode_image.save(f'{barcode_number}.png', img_file, save=True)
-    return pb
+def _product_write_kwargs(validated: dict) -> dict:
+    """Map serializer output → ProductService keyword args."""
+    keys = (
+        'quantity', 'price', 'price_discount', 'discount_percentage',
+        'is_discount', 'is_active', 'badge', 'unit', 'category',
+        'shelf_location', 'product_unit', 'unit_amount',
+    )
+    return {k: validated[k] for k in keys if k in validated}
 
 
 @extend_schema_view(
     get=extend_schema(
-        tags=['Продукты'],
-        summary='Список продуктов',
+        tags=['Products'],
+        summary='Список товаров',
+        description="""
+Каталог для приложения с пагинацией **limit/offset**.
+
+- **`q`** — поиск по названию, описанию, штрихкоду, `unique_id`.
+- **`category`** — ID категории; включаются все вложенные подкатегории.
+- **`is_active`** — фильтр активности.
+
+Публичный доступ (без JWT) для GET.
+""",
         parameters=[
             OpenApiParameter(name='q', type=OpenApiTypes.STR, description='Поиск по названию/описанию/штрихкоду/unique_id'),
-            OpenApiParameter(name='category', type=OpenApiTypes.INT),
-            OpenApiParameter(name='is_active', type=OpenApiTypes.BOOL),
-            OpenApiParameter(name='limit', type=OpenApiTypes.INT, description='Pagination limit'),
-            OpenApiParameter(name='offset', type=OpenApiTypes.INT, description='Pagination offset'),
+            OpenApiParameter(name='category', type=OpenApiTypes.INT, description='ID категории (с подкатегориями)'),
+            OpenApiParameter(name='is_active', type=OpenApiTypes.BOOL, description='true / false'),
+            OpenApiParameter(name='limit', type=OpenApiTypes.INT, description='Размер страницы'),
+            OpenApiParameter(name='offset', type=OpenApiTypes.INT, description='Смещение'),
         ],
     ),
     post=extend_schema(
-        tags=['Продукты'],
-        summary='Создать продукт',
-        description='''FormData: translations (JSON-строка), badge, unit, quantity, price, barcode_number (optional), images (multiple).
+        tags=['Products (Admin)'],
+        summary='Создать товар',
+        description=f'''FormData: translations, price, category, product_unit, unit_amount, …
 
-**translations** поля:
-- name: Название продукта
-- description: Описание продукта
-- composition: Состав продукта
-- expiration_date: Срок годности (текстовое поле)
-- country: Страна производства
-- grammage: Граммаж/вес
-
-**Пример translations:**
-```json
-{
-  "uz": {"name": "Olma", "description": "Yangi olma", "composition": "100% tabiiy", "expiration_date": "2026-12-31", "country": "O'zbekiston", "grammage": "1 kg"},
-  "ru": {"name": "Яблоко", "description": "Свежее яблоко", "composition": "100% натуральный", "expiration_date": "2026-12-31", "country": "Узбекистан", "grammage": "1 кг"},
-  "en": {"name": "Apple", "description": "Fresh apple", "composition": "100% natural", "expiration_date": "2026-12-31", "country": "Uzbekistan", "grammage": "1 kg"}
-}
-```''',
+{PRODUCT_CREATE_DESCRIPTION}''',
         request={
             'multipart/form-data': {
                 'type': 'object',
@@ -390,7 +406,8 @@ def _create_or_update_barcode(product, barcode_number=None):
                     'category': {'type': 'integer', 'description': 'ID категории (обязательно)', 'example': 1},
                     'shelf_location': {'type': 'string', 'description': 'Место на полке (например A-32)', 'example': 'A-32'},
                     'quantity': {'type': 'integer', 'description': 'Количество на складе', 'default': 0, 'example': 100},
-                    'price': {'type': 'number', 'description': 'Цена (обязательно)', 'example': 15000.00},
+                    **PRODUCT_UNIT_FORM_FIELDS,
+                    'price': {'type': 'number', 'description': 'Цена за unit_amount в product_unit (UZS)', 'example': 15000.00},
                     'price_discount': {'type': 'number', 'description': 'Цена со скидкой', 'example': 12000.00},
                     'discount_percentage': {'type': 'integer', 'description': 'Процент скидки', 'default': 0, 'example': 20},
                     'is_discount': {'type': 'boolean', 'description': 'Есть ли скидка', 'default': False, 'example': True},
@@ -449,60 +466,41 @@ class ProductListCreateView(APIView):
 
     def post(self, request):
         data = _parse_product_data(request)
-        data['badge'] = data.get('badge')
-        data['unit'] = data.get('unit')
-        data['category'] = data.get('category')
-        data['barcode_number'] = data.get('barcode_number') or ''
-
         serializer = ProductCreateSerializer(data=data)
         if not serializer.is_valid():
             return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
         v = serializer.validated_data
-        product = Products.objects.create(
-            badge=v.get('badge'),
-            unit=v.get('unit'),
-            shelf_location=v.get('shelf_location'),
-            quantity=v.get('quantity', 0),
-            price=v['price'],
-            price_discount=v.get('price_discount'),
-            discount_percentage=v.get('discount_percentage', 0),
-            is_discount=v.get('is_discount', False),
-            is_active=v.get('is_active', True),
+        barcode_num = (data.get('barcode_number') or '').strip() or None
+        product = ProductService.create_product(
+            translations=v['translations'],
             category=v['category'],
+            price=v['price'],
+            images=request.FILES.getlist('images') or None,
+            barcode_number=barcode_num,
+            **_product_write_kwargs(v),
         )
-        _apply_product_translations(product, v.get('translations'))
-        barcode_num = data.get('barcode_number')
-        _create_or_update_barcode(product, barcode_num if barcode_num else None)
-        for img in request.FILES.getlist('images'):
-            ProductImage.objects.create(product=product, image=img)
-
-        serializer_out = ProductListSerializer(product, context={'request': request})
-        return Response(serializer_out.data, status=status.HTTP_201_CREATED)
+        return Response(
+            ProductListSerializer(product, context={'request': request}).data,
+            status=status.HTTP_201_CREATED,
+        )
 
 
 @extend_schema_view(
-    get=extend_schema(tags=['Продукты'], summary='Продукт по ID'),
+    get=extend_schema(
+        tags=['Products'],
+        summary='Карточка товара',
+        description=(
+            'Карточка товара: `product_unit`, `unit_amount`, `size_label`, цены, штрихкоды, изображения. '
+            'Публичный GET.'
+        ),
+    ),
     put=extend_schema(
-        tags=['Продукты'],
-        summary='Обновить продукт',
-        description='''FormData: translations (JSON-строка), badge, unit, quantity, price, images (multiple). Все поля опциональны.
+        tags=['Products (Admin)'],
+        summary='Обновить товар',
+        description=f'''FormData: все поля опциональны (PATCH).
 
-**translations** поля:
-- name: Название продукта
-- description: Описание продукта
-- composition: Состав продукта
-- expiration_date: Срок годности (текстовое поле)
-- country: Страна производства
-- grammage: Граммаж/вес
-
-**Пример translations:**
-```json
-{
-  "uz": {"name": "Olma", "description": "Yangi olma"},
-  "ru": {"name": "Яблоко", "description": "Свежее яблоко"}
-}
-```''',
+{PRODUCT_CREATE_DESCRIPTION}''',
         request={
             'multipart/form-data': {
                 'type': 'object',
@@ -517,7 +515,8 @@ class ProductListCreateView(APIView):
                     'category': {'type': 'integer', 'description': 'ID категории'},
                     'shelf_location': {'type': 'string', 'description': 'Место на полке (например A-32)', 'example': 'A-32'},
                     'quantity': {'type': 'integer', 'description': 'Количество на складе', 'example': 100},
-                    'price': {'type': 'number', 'description': 'Цена', 'example': 15000.00},
+                    **PRODUCT_UNIT_FORM_FIELDS,
+                    'price': {'type': 'number', 'description': 'Цена за unit_amount в product_unit', 'example': 15000.00},
                     'price_discount': {'type': 'number', 'description': 'Цена со скидкой', 'example': 12000.00},
                     'discount_percentage': {'type': 'integer', 'description': 'Процент скидки', 'example': 20},
                     'is_discount': {'type': 'boolean', 'description': 'Есть ли скидка', 'example': True},
@@ -528,7 +527,11 @@ class ProductListCreateView(APIView):
             }
         },
     ),
-    delete=extend_schema(tags=['Продукты'], summary='Удалить продукт'),
+    delete=extend_schema(
+        tags=['Products (Admin)'],
+        summary='Удалить товар',
+        description='Мягкое удаление (`is_deleted=true`). Только авторизованный админ.',
+    ),
 )
 class ProductDetailView(APIView):
     def get_permissions(self):
@@ -556,20 +559,11 @@ class ProductDetailView(APIView):
             return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
         v = serializer.validated_data
-        for field in ['shelf_location', 'quantity', 'price', 'price_discount', 'discount_percentage', 'is_discount', 'is_active']:
-            if field in v:
-                setattr(product, field, v[field])
-        
-        if 'badge' in v and v['badge'] is not None:
-            product.badge = v['badge']
-        if 'unit' in v and v['unit'] is not None:
-            product.unit = v['unit']
-        if 'category' in v and v['category'] is not None:
-            product.category = v['category']
-        
-        product.save()
-        if 'translations' in v:
-            _apply_product_translations(product, v['translations'])
+        ProductService.update_product(
+            product,
+            translations=v.get('translations'),
+            **_product_write_kwargs(v),
+        )
         if request.FILES.getlist('images'):
             # Default behavior: append new images and keep old ones.
             # To replace existing images, pass replace_images=true (form field or query param).
@@ -638,6 +632,57 @@ class ProductBarcodeDetailView(APIView):
         except ProductBarcode.DoesNotExist:
             return Response({'detail': 'Не найден'}, status=status.HTTP_404_NOT_FOUND)
         return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+@extend_schema(
+    tags=['Штрихкоды'],
+    summary='Сгенерировать уникальный штрихкод для товара',
+    description='''Создаёт новый штрихкод для товара и привязывает его к продукту.
+
+**Уникальность:** среди активных записей (`is_deleted=false`).
+
+**Тело запроса (опционально):**
+- `length` — длина штрихкода (только цифры), по умолчанию **12**, допустимый диапазон **8–32**.
+
+**Доступ:** любой аутентифицированный пользователь (в рамках текущей политики проекта).''',
+    request={
+        'application/json': {
+            'type': 'object',
+            'properties': {
+                'length': {
+                    'type': 'integer',
+                    'example': 12,
+                    'description': 'Длина штрихкода (только цифры). По умолчанию 12, диапазон 8–32.',
+                },
+            },
+        }
+    },
+    responses={201: ProductBarcodeSerializer},
+)
+class ProductBarcodeGenerateView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, product_id):
+        # Basic auth: any authenticated staff/admin can manage products in this project
+        try:
+            product = Products.objects.get(pk=product_id)
+        except Products.DoesNotExist:
+            return Response({'detail': 'Не найден'}, status=status.HTTP_404_NOT_FOUND)
+
+        length = request.data.get('length') or 12
+        try:
+            length = int(length)
+        except Exception:
+            length = 12
+        length = max(8, min(32, length))
+
+        for _ in range(20):
+            barcode = ''.join(random.choice(string.digits) for _ in range(length))
+            if not ProductBarcode.objects.filter(barcode=barcode, is_deleted=False).exists():
+                pb = ProductBarcode.objects.create(product=product, barcode=barcode)
+                return Response(ProductBarcodeSerializer(pb, context={'request': request}).data, status=status.HTTP_201_CREATED)
+
+        return Response({'detail': 'Не удалось сгенерировать уникальный штрихкод'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 
 # ========== ProductImage ==========

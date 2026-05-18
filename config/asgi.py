@@ -30,11 +30,14 @@ def get_websocket_application():
             URLRouter(websocket_urlpatterns)
         )
     )
-    
-    # Only use AllowedHostsOriginValidator in production
-    if not settings.DEBUG:
+
+    # Postman / mobil ko‘pincha Origin yubormaydi — 403 bermaslik uchun ixtiyoriy.
+    # Production: .env da WS_STRICT_ORIGIN=true
+    import os
+    ws_strict = os.getenv('WS_STRICT_ORIGIN', 'false').lower() in ('true', '1', 'yes')
+    if ws_strict:
         websocket_app = AllowedHostsOriginValidator(websocket_app)
-    
+
     return websocket_app
 
 

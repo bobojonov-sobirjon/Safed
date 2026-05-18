@@ -43,14 +43,27 @@ def get_random_operator():
 
 @extend_schema_view(
     get=extend_schema(
-        tags=['Чат'],
-        summary='Список моих чатов',
-        description='Получить список всех чат-комнат пользователя',
+        tags=['Chat'],
+        summary='Мои чаты',
+        description="""
+Список активных чат-комнат текущего пользователя.
+
+- **Покупатель** — комнаты, где он `initiator`.
+- **Персонал (Operator и др.)** — комнаты, где он `receiver`.
+
+Для отправки сообщений используйте WebSocket (см. описание `GET .../messages/`).
+""",
     ),
     post=extend_schema(
-        tags=['Чат'],
-        summary='Создать чат-комнату',
-        description='Создать новую чат-комнату для заказа',
+        tags=['Chat'],
+        summary='Создать чат по заказу',
+        description="""
+Создаёт чат для указанного **`order_id`**. Если комната уже есть — возвращает существующую (**200**).
+
+**Receiver** назначается случайный активный **Operator** (если есть в системе).
+
+Требуется JWT. Заказ должен принадлежать пользователю или быть доступен персоналу.
+""",
         request=ChatRoomCreateSerializer,
     ),
 )
@@ -121,14 +134,18 @@ class ChatRoomListCreateView(APIView):
 
 @extend_schema_view(
     get=extend_schema(
-        tags=['Чат'],
-        summary='Получить чат-комнату',
-        description='Получить детали чат-комнаты с сообщениями',
+        tags=['Chat'],
+        summary='Чат: детали и сообщения',
+        description="""
+Карточка комнаты со всеми сообщениями. При открытии **входящие непрочитанные** (не от текущего пользователя) помечаются прочитанными.
+
+Доступ только участникам чата или персоналу.
+""",
     ),
     delete=extend_schema(
-        tags=['Чат'],
-        summary='Закрыть чат-комнату',
-        description='Деактивировать чат-комнату',
+        tags=['Chat'],
+        summary='Закрыть чат',
+        description='Мягкое закрытие: `is_active=false`. Ответ **204**. Только участник или персонал.',
     ),
 )
 class ChatRoomDetailView(APIView):
@@ -173,9 +190,13 @@ class ChatRoomDetailView(APIView):
 
 @extend_schema_view(
     get=extend_schema(
-        tags=['Чат'],
-        summary='Чат по заказу',
-        description='Получить чат-комнату для заказа по order_id',
+        tags=['Chat'],
+        summary='Чат по ID заказа',
+        description="""
+Возвращает комнату, привязанную к заказу **`order_id`**. Если чата нет — **404**.
+
+Владелец заказа или персонал. Непрочитанные входящие помечаются прочитанными.
+""",
     ),
 )
 class ChatRoomByOrderView(APIView):
@@ -215,9 +236,13 @@ class ChatRoomByOrderView(APIView):
 
 @extend_schema_view(
     get=extend_schema(
-        tags=['Чат'],
+        tags=['Chat'],
         summary='Сообщения чата',
-        description='Получить все сообщения чат-комнаты. Для отправки используйте WebSocket.',
+        description="""
+История сообщений комнаты (новые сверху). Входящие непрочитанные помечаются прочитанными.
+
+**Отправка** — только через WebSocket: `/ws/chat/<room_id>/<access_token>/`.
+""",
     ),
 )
 class ChatMessageListView(APIView):
@@ -245,9 +270,9 @@ class ChatMessageListView(APIView):
 
 @extend_schema_view(
     patch=extend_schema(
-        tags=['Чат'],
-        summary='Прочитать сообщения',
-        description='Отметить все сообщения в комнате как прочитанные',
+        tags=['Chat'],
+        summary='Отметить сообщения чата прочитанными',
+        description='Помечает все входящие сообщения в комнате как прочитанные (свои не трогает). Ответ: `{ "marked_read": <число> }`.',
     ),
 )
 class ChatMessageMarkReadView(APIView):
@@ -274,28 +299,46 @@ class ChatMessageMarkReadView(APIView):
 # Notification Views
 # =============================================================================
 
+@extend_schema_view(
+    get=extend_schema(
+        tags=['Notifications'],
+        summary='Мои уведомления',
+        description='Последние **50** уведомлений текущего пользователя, сортировка по дате (новые первые).',
+    ),
+)
 class NotificationListView(APIView):
     permission_classes = [IsAuthenticated]
 
-    @extend_schema(tags=['Уведомления'], summary='Мои уведомления')
     def get(self, request):
         qs = Notification.objects.filter(user=request.user).order_by('-created_at')[:50]
         return Response(NotificationSerializer(qs, many=True).data)
 
 
+@extend_schema_view(
+    get=extend_schema(
+        tags=['Notifications'],
+        summary='Непрочитанные уведомления',
+        description='Все уведомления с `is_read=false` для текущего пользователя.',
+    ),
+)
 class UnreadNotificationListView(APIView):
     permission_classes = [IsAuthenticated]
 
-    @extend_schema(tags=['Уведомления'], summary='Непрочитанные уведомления')
     def get(self, request):
         qs = Notification.objects.filter(user=request.user, is_read=False).order_by('-created_at')
         return Response(NotificationSerializer(qs, many=True).data)
 
 
+@extend_schema_view(
+    patch=extend_schema(
+        tags=['Notifications'],
+        summary='Отметить уведомление прочитанным',
+        description='Только своё уведомление по `pk`. Ответ **204**. Если не найдено — **404**.',
+    ),
+)
 class NotificationMarkReadView(APIView):
     permission_classes = [IsAuthenticated]
 
-    @extend_schema(tags=['Уведомления'], summary='Отметить уведомление прочитанным')
     def patch(self, request, pk):
         try:
             n = Notification.objects.get(pk=pk, user=request.user)
@@ -307,10 +350,16 @@ class NotificationMarkReadView(APIView):
         return Response(status=status.HTTP_204_NO_CONTENT)
 
 
+@extend_schema_view(
+    patch=extend_schema(
+        tags=['Notifications'],
+        summary='Отметить все уведомления прочитанными',
+        description='Помечает все непрочитанные уведомления пользователя. Ответ: `{ "marked_read": <число> }`.',
+    ),
+)
 class NotificationMarkAllReadView(APIView):
     permission_classes = [IsAuthenticated]
 
-    @extend_schema(tags=['Уведомления'], summary='Отметить все уведомления прочитанными')
     def patch(self, request):
         count = Notification.objects.filter(user=request.user, is_read=False).update(is_read=True)
         return Response({'marked_read': count})

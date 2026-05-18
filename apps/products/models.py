@@ -4,8 +4,13 @@ Keeps backward compatibility with existing database tables.
 """
 from __future__ import annotations
 from typing import Optional
+from decimal import Decimal
+
 from django.db import models
+from django.db.models import Q
 from parler.models import TranslatableModel, TranslatedFields
+
+from apps.core.enums import ProductUnit, SaleUnit
 
 
 class SoftDeleteManager(models.Manager):
@@ -201,7 +206,31 @@ class Products(TranslatableModel):
         related_name='products',
         verbose_name='Категория'
     )
-    
+
+    sale_unit = models.CharField(
+        max_length=16,
+        choices=[('piece', 'Piece'), ('weight', 'Weight (kg)')],
+        default='piece',
+        verbose_name='Тип продажи',
+        db_index=True,
+        help_text='Устаревшее: синхронизируется с product_unit. piece / weight.',
+    )
+    product_unit = models.CharField(
+        max_length=16,
+        choices=ProductUnit.choices(),
+        default=ProductUnit.PIECE.value,
+        verbose_name='Единица цены',
+        db_index=True,
+        help_text='Цена в price за unit_amount этой единицы (kg, ml, piece, …).',
+    )
+    unit_amount = models.DecimalField(
+        max_digits=12,
+        decimal_places=3,
+        default=Decimal('1'),
+        verbose_name='Базовый объём цены',
+        help_text='Напр. 1 (кг), 500 (ml для бутылки 500ml). total = (normalized_qty / unit_amount) × price.',
+    )
+
     quantity = models.PositiveIntegerField(
         default=0,
         verbose_name='Количество',
@@ -275,6 +304,15 @@ class Products(TranslatableModel):
     def is_in_stock(self) -> bool:
         """Check if product is in stock."""
         return self.quantity > 0
+
+    def save(self, *args, **kwargs):
+        if self.product_unit in ProductUnit.weight_units():
+            self.sale_unit = SaleUnit.WEIGHT.value
+        else:
+            self.sale_unit = SaleUnit.PIECE.value
+        if self.unit_amount is None or self.unit_amount <= 0:
+            self.unit_amount = Decimal('1')
+        super().save(*args, **kwargs)
     
     def delete(self, *args, hard_delete=False, **kwargs):
         """Soft delete by default."""
@@ -334,6 +372,13 @@ class ProductBarcode(models.Model):
         indexes = [
             models.Index(fields=['product']),
             models.Index(fields=['is_active']),
+        ]
+        constraints = [
+            models.UniqueConstraint(
+                fields=['barcode'],
+                condition=Q(is_deleted=False),
+                name='uniq_active_product_barcode',
+            )
         ]
 
     def __str__(self) -> str:

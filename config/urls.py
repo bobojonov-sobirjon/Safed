@@ -25,13 +25,13 @@ api_v1_patterns = [
     path('', include('apps.accounts.urls')),
     path('', include('apps.categories.urls')),
     path('', include('apps.realtime.urls')),
+    path('', include('apps.inventory.urls')),
     path('', include('apps.orders.stats_urls')),
 ]
 
 urlpatterns = [
-    # Admin
-    # path('admin/', admin.site.urls),
-    
+    path('admin/', admin.site.urls),
+
     # API Documentation
     path('schema/', custom_schema_view, name='schema'),
     path(

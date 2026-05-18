@@ -1,8 +1,10 @@
+import json
+
 from rest_framework import status
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated, AllowAny
-from drf_spectacular.utils import extend_schema, extend_schema_view, OpenApiParameter
+from drf_spectacular.utils import extend_schema, extend_schema_view, OpenApiParameter, OpenApiResponse
 from drf_spectacular.types import OpenApiTypes
 
 from django.db import transaction
@@ -22,20 +24,39 @@ def _period_to_iso(p):
         return p.isoformat()
     return str(p)
 
-from .models import Order, OrderProduct, OrderCourier, DeliveryFeeRule, OrderFeeSettings
+from .models import Order, OrderProduct, OrderCourier, DeliveryFeeRule, OrderFeeSettings, DeliveryAddress
 from apps.products.models import Products
 from .serializers import (
     OrderListSerializer,
+    MyOrderListSerializer,
     OrderCreateSerializer,
     OrderUpdateSerializer,
     AddCourierSerializer,
     StatusChangeSerializer,
-    FinalizePricingSerializer,
     OrderFeeSettingsSerializer,
     DeliveryFeeRuleSerializer,
 )
-from apps.core.enums import OrderStatus, UserGroup
-from .pricing import compute_order_pricing
+from apps.accounts.models import CustomUser
+from apps.core.enums import OrderStatus, UserGroup, PaymentStatus, PaymentType, ProductUnit
+from apps.products.unit_pricing import catalog_unit_for_product, stock_units_required
+from .pricing import compute_order_pricing, build_pricing_preview, snapshot_order_checkout_total
+from .openapi_params import (
+    ORDER_PATH_PARAMS,
+    PARAM_ADDRESS_ID,
+    PARAM_DELIVERY_RULE_ID,
+    PARAM_ORDER_STATUS_FILTER,
+)
+from .openapi_descriptions import ORDER_CREATE_DESCRIPTION
+from .request_parsing import parse_order_request_data
+from .openapi_tags import (
+    TAG_ADMIN_OPERATIONS,
+    TAG_COURIER,
+    TAG_CREATE_ORDER,
+    TAG_FEES,
+    TAG_MY_ORDERS,
+    TAG_ORDER_DETAIL,
+    TAG_STATISTICS,
+)
 from decimal import Decimal
 
 COURIER_GROUP = UserGroup.COURIER.value
@@ -67,64 +88,31 @@ def ensure_admin_or_super_admin(request):
 # ========== Create Order ==========
 
 @extend_schema(
-    tags=['Заказы'],
-    summary='Создать заказ',
-    description='''Создание нового заказа.
-
-**Поля:**
-- `products_data` - список продуктов (обязательно)
-- `lat` - широта (обязательно)
-- `long` - долгота (обязательно)
-- `address` - адрес доставки (обязательно)
-- `entrance` - подъезд (опционально)
-- `apartment` - дом/квартира (опционально)
-- `comment` - комментарий (опционально)
-
-**Примечание:** Статус заказа автоматически устанавливается как `new`.
-''',
-    request={
-        'application/json': {
-            'type': 'object',
-            'properties': {
-                'products_data': {
-                    'type': 'array',
-                    'items': {
-                        'type': 'object',
-                        'properties': {
-                            'product_id': {'type': 'integer', 'description': 'ID продукта', 'example': 1},
-                            'quantity': {'type': 'integer', 'description': 'Количество', 'example': 2},
-                            'total_price': {'type': 'number', 'description': 'Общая цена', 'example': 30000.00},
-                        },
-                        'required': ['product_id', 'quantity', 'total_price'],
-                    },
-                    'description': 'Список продуктов',
-                    'example': [
-                        {'product_id': 1, 'quantity': 2, 'total_price': 30000.00},
-                        {'product_id': 3, 'quantity': 1, 'total_price': 15000.00},
-                    ],
-                },
-                'lat': {'type': 'number', 'description': 'Широта', 'example': 41.311081},
-                'long': {'type': 'number', 'description': 'Долгота', 'example': 69.240562},
-                'address': {'type': 'string', 'description': 'Адрес доставки', 'example': 'г. Ташкент, ул. Амира Темура, 10'},
-                'entrance': {'type': 'string', 'description': 'Подъезд', 'example': '2'},
-                'apartment': {'type': 'string', 'description': 'Дом/квартира', 'example': '12'},
-                'comment': {'type': 'string', 'description': 'Комментарий', 'example': 'Домофон не работает'},
-            },
-            'required': ['products_data', 'lat', 'long', 'address'],
-        }
-    },
+    tags=[TAG_CREATE_ORDER],
+    summary='Создать заказ (checkout)',
+    description=ORDER_CREATE_DESCRIPTION,
+    request=OrderCreateSerializer,
+    responses={201: OrderListSerializer},
 )
 class OrderCreateView(APIView):
     permission_classes = [IsAuthenticated]
 
     def post(self, request):
-        serializer = OrderCreateSerializer(data=request.data)
+        try:
+            body = parse_order_request_data(request.data)
+        except (json.JSONDecodeError, ValueError) as exc:
+            return Response(
+                {'products_data': [str(exc)]},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        serializer = OrderCreateSerializer(data=body, context={'request': request})
         if not serializer.is_valid():
             return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
         v = serializer.validated_data
 
         with transaction.atomic():
+            user = CustomUser.objects.select_for_update().get(pk=request.user.pk)
             ids = [item['product_id'] for item in v['products_data']]
             products = {p.id: p for p in Products.objects.select_for_update().filter(id__in=ids)}
             insufficient = []
@@ -132,11 +120,20 @@ class OrderCreateView(APIView):
                 p = products.get(item['product_id'])
                 if not p:
                     continue
-                if p.quantity < item['quantity']:
+                needed = stock_units_required(p, item['normalized_quantity'])
+                cat = catalog_unit_for_product(p)
+                if cat == ProductUnit.PIECE.value:
+                    if p.quantity < int(needed):
+                        insufficient.append({
+                            'product_id': p.id,
+                            'available_quantity': p.quantity,
+                            'requested_quantity': str(needed),
+                        })
+                elif Decimal(p.quantity) < needed:
                     insufficient.append({
                         'product_id': p.id,
-                        'available_quantity': p.quantity,
-                        'requested_quantity': item['quantity'],
+                        'available_quantity': str(p.quantity),
+                        'requested_quantity': str(needed),
                     })
             if insufficient:
                 return Response(
@@ -147,25 +144,75 @@ class OrderCreateView(APIView):
                     status=status.HTTP_400_BAD_REQUEST,
                 )
 
+            preview = build_pricing_preview(
+                products_data=v['products_data'],
+                products_by_id=products,
+                delivery_slot=None,
+                loyalty_points_to_use=int(v.get('loyalty_points_to_use') or 0),
+                user=user,
+            )
+            pts_applied = int(preview['loyalty_points_applied'])
+            if pts_applied > int(user.loyalty_points or 0):
+                return Response({'loyalty_points_to_use': ['Недостаточно баллов.']}, status=status.HTTP_400_BAD_REQUEST)
+
+            delivery_addr_obj = None
+            if v.get('delivery_address_id'):
+                da = DeliveryAddress.objects.get(pk=v['delivery_address_id'], user=request.user)
+                lat, long = da.lat, da.long
+                address = f'{da.street}, {da.house_number}'.strip().strip(',')
+                entrance = (v.get('entrance') or da.entrance or '') or ''
+                apartment = (v.get('apartment') or da.apartment or '') or ''
+                delivery_addr_obj = da
+            else:
+                lat, long, address = v['lat'], v['long'], v['address']
+                entrance = v.get('entrance') or ''
+                apartment = v.get('apartment') or ''
+
+            delivery_date = v.get('delivery_date')
+            dts = v.get('delivery_time_start')
+            dte = v.get('delivery_time_end')
+
+            if pts_applied:
+                CustomUser.objects.filter(pk=user.pk).update(loyalty_points=F('loyalty_points') - pts_applied)
+
             order = Order.objects.create(
                 user=request.user,
-                lat=v['lat'],
-                long=v['long'],
-                address=v['address'],
-                entrance=v.get('entrance') or '',
-                apartment=v.get('apartment') or '',
+                lat=lat,
+                long=long,
+                address=address,
+                entrance=entrance or '',
+                apartment=apartment or '',
                 comment=v.get('comment') or '',
-                status=OrderStatus.NEW.value,
+                status=OrderStatus.CREATED.value,
+                payment_type=v['payment_type'],
+                payment_status=PaymentStatus.PENDING.value,
+                delivery_date=delivery_date,
+                delivery_time_start=dts,
+                delivery_time_end=dte,
+                delivery_slot=None,
+                delivery_address=delivery_addr_obj,
+                loyalty_points_used=pts_applied,
+                leave_at_door=bool(v.get('leave_at_door')),
             )
             for item in v['products_data']:
+                qty = Decimal(str(item['quantity']))
                 OrderProduct.objects.create(
                     order=order,
                     product_id=item['product_id'],
-                    quantity=item['quantity'],
+                    ordered_quantity=qty,
+                    quantity=qty,
+                    product_unit=item['product_unit'],
+                    normalized_quantity=item['normalized_quantity'],
+                    unit_price=item['unit_price'],
                     total_price=item['total_price'],
                 )
             compute_order_pricing(order)
+            snapshot_order_checkout_total(order)
             order.save()
+
+            if order.payment_type == PaymentType.CASH.value:
+                from .services.cash_delivery import assign_cash_qr_token
+                assign_cash_qr_token(order)
 
         return Response(OrderListSerializer(order, context={'request': request}).data, status=status.HTTP_201_CREATED)
 
@@ -173,24 +220,26 @@ class OrderCreateView(APIView):
 # ========== Add Courier ==========
 
 @extend_schema(
-    tags=['Заказы'],
-    summary='Добавить курьера',
-    description='''Назначить курьера на заказ.
+    tags=[TAG_ADMIN_OPERATIONS],
+    parameters=ORDER_PATH_PARAMS,
+    summary='Назначить курьера',
+    description="""
+### Path: **`id`** — buyurtma ID (`Order.id`)
 
-**Условия:**
-- Заказ должен быть в статусе `picking`
-- После назначения статус меняется на `on_the_way`
-- Пользователь должен быть в группе `Courier`
-''',
-    request={
-        'application/json': {
-            'type': 'object',
-            'properties': {
-                'courier_id': {'type': 'integer', 'description': 'ID курьера', 'example': 5},
-            },
-            'required': ['courier_id'],
-        }
-    },
+Назначает курьера заказу и переводит статус в **`shipped`**.
+
+### Условия
+- Заказ в статусе **`picking`**.
+- Пользователь с `courier_id` — в группе **Courier**.
+
+### Тело
+- **`courier_id`** (integer) — ID пользователя-курьера.
+
+### Ответ
+Объект заказа (как в списке заказов).
+""",
+    request=AddCourierSerializer,
+    responses={200: OrderListSerializer},
 )
 class OrderAddCourierView(APIView):
     permission_classes = [IsAuthenticated]
@@ -219,7 +268,7 @@ class OrderAddCourierView(APIView):
             return Response({'courier_id': ['Пользователь не является курьером']}, status=status.HTTP_400_BAD_REQUEST)
 
         OrderCourier.objects.get_or_create(order=order, courier=courier)
-        order.status = OrderStatus.ON_THE_WAY.value
+        order.status = OrderStatus.SHIPPED.value
         order.save()
 
         return Response(OrderListSerializer(order, context={'request': request}).data)
@@ -228,34 +277,28 @@ class OrderAddCourierView(APIView):
 # ========== Status Change ==========
 
 @extend_schema(
-    tags=['Заказы'],
-    summary='Изменить статус',
-    description='''Изменить статус заказа.
+    tags=[TAG_ADMIN_OPERATIONS],
+    parameters=ORDER_PATH_PARAMS,
+    summary='Сменить статус заказа',
+    description="""
+### Path: **`id`** — buyurtma ID (`Order.id`)
 
-**Доступные статусы:**
-- `new` - Новый
-- `picking` - Собирается
-- `on_the_way` - В пути
-- `delivered` - Доставлен
-- `rejected` - Отменён
-- `cancelled` - Отменён пользователем
+Изменяет статус заказа по **state machine** (только **персонал**).
 
-**Примечание:** При переходе в статус `delivered` автоматически уменьшается количество товаров на складе.
-''',
-    request={
-        'application/json': {
-            'type': 'object',
-            'properties': {
-                'status': {
-                    'type': 'string',
-                    'enum': ['new', 'picking', 'on_the_way', 'delivered', 'rejected', 'cancelled'],
-                    'description': 'Новый статус заказа',
-                    'example': 'on_the_way'
-                },
-            },
-            'required': ['status'],
-        }
-    },
+### Переходы
+- `created` → `confirmed`, `rejected`, `cancelled`
+- `confirmed` → `picking`, `rejected`, `cancelled`
+- `picking` → `shipped`, `rejected`, `cancelled`
+- `shipped` → `delivered`, `rejected`
+
+### `delivered`
+При первом переходе в **`delivered`** со склада списывается количество по строкам заказа (для весовых позиций — округление вверх до целых единиц учёта).
+
+### Тело
+- **`status`** — значение из enum в схеме.
+""",
+    request=StatusChangeSerializer,
+    responses={200: OrderListSerializer},
 )
 class OrderStatusChangeView(APIView):
     permission_classes = [IsAuthenticated]
@@ -272,91 +315,86 @@ class OrderStatusChangeView(APIView):
         except Order.DoesNotExist:
             return Response({'detail': 'Не найден'}, status=status.HTTP_404_NOT_FOUND)
 
+        if not user_is_staff(request.user):
+            return Response({'detail': 'Доступ запрещён'}, status=status.HTTP_403_FORBIDDEN)
+
+        if not order.can_transition_to(new_status):
+            return Response({'detail': 'Недопустимый переход статуса'}, status=status.HTTP_400_BAD_REQUEST)
+
+        if (
+            new_status == OrderStatus.DELIVERED.value
+            and order.payment_type == PaymentType.CASH.value
+        ):
+            return Response(
+                {
+                    'detail': 'Cash buyurtma: PATCH delivered o‘rniga PATCH /orders/cash/confirm/ (QR) ishlating.',
+                    'code': 'cash_use_qr_confirm',
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
         previous_status = order.status
         order.status = new_status
+
+        if new_status == OrderStatus.DELIVERED.value:
+            from .pricing import compute_order_settlement
+
+            compute_order_settlement(order)
+
         order.save()
 
         if previous_status != OrderStatus.DELIVERED.value and new_status == OrderStatus.DELIVERED.value:
-            products_qs = OrderProduct.objects.select_related('product').filter(order=order)
-            for op in products_qs:
-                if op.product:
-                    Products.objects.filter(id=op.product_id).update(
-                        quantity=F('quantity') - op.quantity
-                    )
+            from .services.cash_delivery import deduct_order_stock
 
-        return Response(OrderListSerializer(order, context={'request': request}).data)
+            deduct_order_stock(order)
 
-
-# ========== Finalize Pricing (admin/operator) ==========
-
-@extend_schema(
-    tags=['Заказы'],
-    summary='Финализировать сумму заказа (admin/operator)',
-    description='Admin/Operator kiritadigan yakuniy summa. Refund (qaytim) hisoblanadi: max(estimated_total - final_total, 0).',
-    request={
-        'application/json': {
-            'type': 'object',
-            'properties': {
-                'final_total': {'type': 'number', 'example': 110000},
-            },
-            'required': ['final_total'],
-        }
-    },
-)
-class OrderFinalizePricingView(APIView):
-    permission_classes = [IsAuthenticated]
-
-    def patch(self, request, pk):
-        if not user_is_staff(request.user) or user_is_courier(request.user):
-            return Response({'detail': 'Доступ запрещён'}, status=status.HTTP_403_FORBIDDEN)
-
-        serializer = FinalizePricingSerializer(data=request.data)
-        if not serializer.is_valid():
-            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
-
-        try:
-            order = Order.objects.get(pk=pk)
-        except Order.DoesNotExist:
-            return Response({'detail': 'Не найден'}, status=status.HTTP_404_NOT_FOUND)
-
-        final_total = serializer.validated_data['final_total']
-        # Ensure pricing is up-to-date
-        compute_order_pricing(order)
-        order.final_total = final_total
-        diff = (order.estimated_total - final_total).quantize(Decimal('0.01'))
-        order.refund_amount = diff if diff > 0 else Decimal('0.00')
-        order.save()
         return Response(OrderListSerializer(order, context={'request': request}).data)
 
 
 # ========== User Orders (my orders) ==========
 
 @extend_schema(
-    tags=['Заказы'],
+    tags=[TAG_MY_ORDERS],
     summary='Мои заказы',
-    parameters=[
-        OpenApiParameter(name='status', type=OpenApiTypes.STR, description='pending, process, delivering, completed, rejected'),
-    ],
+    description="""
+Список заказов **текущего пользователя**, новые сверху.
+
+### Query
+- **`status`** (optional) — фильтр: `created`, `confirmed`, `picking`, `shipped`, `delivered`, `rejected`, `cancelled`.
+""",
+    parameters=[PARAM_ORDER_STATUS_FILTER],
 )
 class MyOrderListView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
-        qs = Order.objects.filter(user=request.user).order_by('-created_at')
+        qs = (
+            Order.objects.filter(user=request.user)
+            .select_related('user')
+            .prefetch_related('cancel_reasons')
+            .order_by('-created_at')
+        )
         status_filter = request.query_params.get('status')
         if status_filter:
             qs = qs.filter(status=status_filter)
-        return Response(OrderListSerializer(qs, many=True, context={'request': request}).data)
+        return Response(MyOrderListSerializer(qs, many=True, context={'request': request}).data)
 
 
 # ========== All Orders (admin/staff) ==========
 
 @extend_schema(
-    tags=['Заказы'],
-    summary='Все заказы',
+    tags=[TAG_ADMIN_OPERATIONS],
+    summary='Все заказы (персонал)',
+    description="""
+Полный список заказов (только **staff**). Сортировка: новые сверху.
+
+### Query
+- **`status`** — фильтр по статусу.
+- **`user`** — фильтр по ID покупателя.
+""",
     parameters=[
-        OpenApiParameter(name='status', type=OpenApiTypes.STR),
-        OpenApiParameter(name='user', type=OpenApiTypes.INT, description='ID пользователя'),
+        OpenApiParameter(name='status', type=OpenApiTypes.STR, description='Статус заказа (опционально).'),
+        OpenApiParameter(name='user', type=OpenApiTypes.INT, description='ID пользователя-покупателя (опционально).'),
     ],
 )
 class OrderListView(APIView):
@@ -380,10 +418,20 @@ class OrderListView(APIView):
 # ========== Courier: My assigned orders ==========
 
 @extend_schema(
-    tags=['Заказы'],
+    tags=[TAG_COURIER],
     summary='Мои заказы (курьер)',
+    description="""
+Заказы, где текущий пользователь назначен курьером (`OrderCourier`).
+
+### Query
+- **`status`** — опциональный фильтр по статусу заказа.
+""",
     parameters=[
-        OpenApiParameter(name='status', type=OpenApiTypes.STR, description='new, picking, on_the_way, delivered, rejected, cancelled'),
+        OpenApiParameter(
+            name='status',
+            type=OpenApiTypes.STR,
+            description='Фильтр по статусу: created, confirmed, picking, shipped, delivered, rejected, cancelled.',
+        ),
     ],
 )
 class CourierMyOrdersView(APIView):
@@ -401,10 +449,16 @@ class CourierMyOrdersView(APIView):
 
 
 @extend_schema(
-    tags=['Заказы'],
-    summary='Активные заказы (для персонала/курьера)',
+    tags=[TAG_ADMIN_OPERATIONS],
+    summary='Активные заказы',
+    description="""
+Заказы в «активных» статусах: **`created`**, **`confirmed`**, **`picking`**, **`shipped`** (ещё не финальные).
+
+### Query
+- **`status`** — дополнительный узкий фильтр внутри активных.
+""",
     parameters=[
-        OpenApiParameter(name='status', type=OpenApiTypes.STR),
+        OpenApiParameter(name='status', type=OpenApiTypes.STR, description='Опционально: статус из активных.'),
     ],
 )
 class ActiveOrdersView(APIView):
@@ -424,43 +478,52 @@ class ActiveOrdersView(APIView):
 # ========== Order Detail, Update, Delete ==========
 
 @extend_schema_view(
-    get=extend_schema(tags=['Заказы'], summary='Заказ по ID'),
-    put=extend_schema(
-        tags=['Заказы'],
-        summary='Обновить заказ',
-        description='''Обновление заказа. Все поля опциональны.
+    get=extend_schema(
+        tags=[TAG_ORDER_DETAIL],
+        parameters=ORDER_PATH_PARAMS,
+        summary='Buyurtma batafsil (GET)',
+        description="""
+### Path: **`id`** — buyurtma ID (`Order.id`)
 
-**Условия:**
-- Обновление возможно только при статусе `pending`
-- При изменении `products_data` старые продукты удаляются
-''',
-        request={
-            'application/json': {
-                'type': 'object',
-                'properties': {
-                    'products_data': {
-                        'type': 'array',
-                        'items': {
-                            'type': 'object',
-                            'properties': {
-                                'product_id': {'type': 'integer', 'example': 1},
-                                'quantity': {'type': 'integer', 'example': 3},
-                                'total_price': {'type': 'number', 'example': 45000.00},
-                            },
-                        },
-                        'example': [{'product_id': 1, 'quantity': 3, 'total_price': 45000.00}],
-                    },
-                    'lat': {'type': 'number', 'example': 41.311081},
-                    'long': {'type': 'number', 'example': 69.240562},
-                    'address': {'type': 'string', 'example': 'г. Ташкент, ул. Навои, 25'},
-                },
-            }
-        },
+Карточка заказа. Видит **владелец** или **персонал**.
+
+### Muhim maydonlar javobda
+- **`order_products[].id`** — yig‘ish uchun `line_id` (PATCH `/picking-lines/{line_id}/`)
+- **`order_products[].product_id`** — katalog mahsulot ID
+- `order_pricing`, `delivery_slot`, `status`, `cancellation` (agar `cancelled`)
+""",
+        responses={200: OrderListSerializer},
+    ),
+    put=extend_schema(
+        tags=[TAG_ORDER_DETAIL],
+        parameters=ORDER_PATH_PARAMS,
+        summary='Обновить заказ',
+        description="""
+### Path: **`id`** — buyurtma ID
+
+Частичное обновление заказа (владелец, только статус **`created`**).
+
+### Можно передать
+- **`products_data`** — полная замена строк заказа (старые удаляются). `quantity` — число (дробное для кг).
+- Координаты, адрес, комментарий, слот / legacy время доставки, баллы — см. `OrderUpdateSerializer`.
+
+### Ошибки
+- **400** — не `created`, валидация, склад, цены, минимальный чек.
+""",
+        request=OrderUpdateSerializer,
+        responses={200: OrderListSerializer},
     ),
     delete=extend_schema(
-        tags=['Заказы'],
+        tags=[TAG_ORDER_DETAIL],
+        parameters=ORDER_PATH_PARAMS,
         summary='Удалить заказ',
-        description='Удаление возможно только при статусе `pending`.',
+        description="""
+### Path: **`id`** — buyurtma ID
+
+Жёсткое удаление записи заказа — **только** пока статус **`created`**.
+
+Bekor qilish: **`POST /orders/<id>/cancel/`** — faqat **`created`** (sabablar: `GET /orders/cancel-reasons/`).
+""",
     ),
 )
 class OrderDetailView(APIView):
@@ -475,6 +538,11 @@ class OrderDetailView(APIView):
         if not user_is_staff(request.user) and order.user != request.user:
             return Response({'detail': 'Не найден'}, status=status.HTTP_404_NOT_FOUND)
 
+        order = (
+            Order.objects.select_related('user')
+            .prefetch_related('cancel_reasons')
+            .get(pk=order.pk)
+        )
         return Response(OrderListSerializer(order, context={'request': request}).data)
 
     def put(self, request, pk):
@@ -484,9 +552,16 @@ class OrderDetailView(APIView):
             return Response({'detail': 'Не найден'}, status=status.HTTP_404_NOT_FOUND)
 
         if not order.can_update_or_delete:
-            return Response({'detail': 'Обновление возможно только при статусе new'}, status=status.HTTP_400_BAD_REQUEST)
+            return Response({'detail': 'Обновление возможно только при статусе created'}, status=status.HTTP_400_BAD_REQUEST)
 
-        serializer = OrderUpdateSerializer(data=request.data, partial=True)
+        try:
+            body = parse_order_request_data(request.data)
+        except (json.JSONDecodeError, ValueError) as exc:
+            return Response({'products_data': [str(exc)]}, status=status.HTTP_400_BAD_REQUEST)
+
+        serializer = OrderUpdateSerializer(
+            data=body, partial=True, context={'order_id': order.pk, 'request': request},
+        )
         if not serializer.is_valid():
             return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
         v = serializer.validated_data
@@ -500,11 +575,20 @@ class OrderDetailView(APIView):
                     p = products.get(item['product_id'])
                     if not p:
                         continue
-                    if p.quantity < item['quantity']:
+                    needed = stock_units_required(p, item['normalized_quantity'])
+                    cat = catalog_unit_for_product(p)
+                    if cat == ProductUnit.PIECE.value:
+                        if p.quantity < int(needed):
+                            insufficient.append({
+                                'product_id': p.id,
+                                'available_quantity': p.quantity,
+                                'requested_quantity': str(needed),
+                            })
+                    elif Decimal(p.quantity) < needed:
                         insufficient.append({
                             'product_id': p.id,
-                            'available_quantity': p.quantity,
-                            'requested_quantity': item['quantity'],
+                            'available_quantity': str(p.quantity),
+                            'requested_quantity': str(needed),
                         })
                 if insufficient:
                     return Response(
@@ -527,13 +611,22 @@ class OrderDetailView(APIView):
                 order.apartment = v['apartment'] or ''
             if 'comment' in v:
                 order.comment = v['comment'] or ''
+            if any(k in request.data for k in ('delivery_date', 'delivery_time_start', 'delivery_time_end')):
+                order.delivery_date = v.get('delivery_date')
+                order.delivery_time_start = v.get('delivery_time_start')
+                order.delivery_time_end = v.get('delivery_time_end')
             if 'products_data' in v:
                 order.order_products.all().delete()
                 for item in v['products_data']:
+                    qty = Decimal(str(item['quantity']))
                     OrderProduct.objects.create(
                         order=order,
                         product_id=item['product_id'],
-                        quantity=item['quantity'],
+                        ordered_quantity=qty,
+                        quantity=qty,
+                        product_unit=item['product_unit'],
+                        normalized_quantity=item['normalized_quantity'],
+                        unit_price=item['unit_price'],
                         total_price=item['total_price'],
                     )
             compute_order_pricing(order)
@@ -548,7 +641,7 @@ class OrderDetailView(APIView):
             return Response({'detail': 'Не найден'}, status=status.HTTP_404_NOT_FOUND)
 
         if not order.can_update_or_delete:
-            return Response({'detail': 'Удаление возможно только при статусе new'}, status=status.HTTP_400_BAD_REQUEST)
+            return Response({'detail': 'Удаление возможно только при статусе created'}, status=status.HTTP_400_BAD_REQUEST)
 
         order.delete()
         return Response(status=status.HTTP_204_NO_CONTENT)
@@ -557,7 +650,7 @@ class OrderDetailView(APIView):
 # ========== Statistika (Super Admin) ==========
 
 @extend_schema(
-    tags=['Статистика'],
+    tags=[TAG_STATISTICS],
     summary='Общая статистика (Super Admin)',
     description='Количество заказов, выручка, клиенты, статусы. Поддерживает фильтрацию по дате и агрегацию по периодам.',
     parameters=[
@@ -650,7 +743,7 @@ class StatsOverviewView(APIView):
 
 
 @extend_schema(
-    tags=['Статистика'],
+    tags=[TAG_STATISTICS],
     summary='Статистика по продуктам (Super Admin)',
     description='Топ продаваемых продуктов и остатки на складе. Поддерживает фильтрацию по дате и категории.',
     parameters=[
@@ -752,9 +845,23 @@ class OrderFeeSettingsView(APIView):
         return [IsAuthenticated()]
 
     @extend_schema(
-        tags=['Admin Fees'],
-        summary='Fee settings (get)',
-        description='Faqat Super Admin yoki Admin. 10% servis va packing fee shu yerda boshqariladi.',
+        tags=[TAG_FEES],
+        summary='Настройки сборов: получить',
+        description='''**Назначение:** единая запись глобальных параметров сборов (singleton, обычно `id=1`).
+
+**Что в ответе:**
+- `service_fee_percent` — процент сервисного сбора от суммы товаров.
+- `packing_fee_amount` — фиксированная упаковка на заказ.
+- `min_order_subtotal` — минимальная сумма товаров для оформления заказа.
+- `weight_buffer_percent` — процент буфера на весовые позиции (к пересчёту после взвешивания).
+- `loyalty_point_currency_value` — сколько UZS даёт 1 балл при списании.
+- `hourly_delivery_capacity` — макс. заказов на один час (`GET /checkout/delivery-slots/`, по умолчанию 15).
+- `updated_at` — время последнего изменения.
+
+**Как используется в заказе:** при расчёте заказа (`compute_order_pricing`) из суммы товаров считается сервис, к итогу добавляется упаковка и доставка по правилам из `/admin/fees/delivery-rules/`.
+
+**Доступ:** только **Super Admin** или **Admin** (нужен действующий токен авторизации). Без прав — `403`.
+''',
         responses=OrderFeeSettingsSerializer,
     )
     def get(self, request):
@@ -765,9 +872,16 @@ class OrderFeeSettingsView(APIView):
         return Response(OrderFeeSettingsSerializer(obj).data)
 
     @extend_schema(
-        tags=['Admin Fees'],
-        summary='Fee settings (update)',
-        description='Faqat Super Admin yoki Admin. 10% servis va packing fee shu yerda boshqariladi.',
+        tags=[TAG_FEES],
+        summary='Настройки сборов: обновить',
+        description='''**Назначение:** частичное обновление (`PATCH`) полей глобальных сборов.
+
+**Тело:** любое подмножество полей: `service_fee_percent`, `packing_fee_amount`, `min_order_subtotal`, `weight_buffer_percent`, `loyalty_point_currency_value`, `hourly_delivery_capacity`. Поля `id` и `updated_at` — только чтение.
+
+**Эффект:** новые значения начнут участвовать в расчёте **следующих** заказов и пересчёте цен при вызове логики оформления заказа.
+
+**Доступ:** только **Super Admin** или **Admin**. Ошибки валидации — `400`.
+''',
         request=OrderFeeSettingsSerializer,
         responses=OrderFeeSettingsSerializer,
     )
@@ -790,9 +904,17 @@ class DeliveryFeeRuleListCreateView(APIView):
         return [IsAuthenticated()]
 
     @extend_schema(
-        tags=['Admin Fees'],
-        summary='Delivery fee rules (list)',
-        description='Faqat Super Admin yoki Admin. Dostavka rule larini boshqarish.',
+        tags=[TAG_FEES],
+        summary='Правила доставки: список',
+        description='''**Назначение:** получить все записи правил доставки (в т.ч. неактивные), отсортированные по `min_order_amount`, затем по `id`.
+
+**Логика расчёта доставки** (как в `get_delivery_fee`):
+- Берутся правила с `is_active=true` (при расчёте заказа; в этом списке вы видите все записи).
+- Для суммы товаров заказа `products_subtotal` ищется **первое** правило, где `min_order_amount ≤ subtotal` и (`max_order_amount` пусто **или** `subtotal ≤ max_order_amount`).
+- Тогда доставка = `fee_amount` выбранного правила; если ни одно не подошло — `0`.
+
+**Доступ:** только **Super Admin** или **Admin** (`403` без прав).
+''',
         responses=DeliveryFeeRuleSerializer(many=True),
     )
     def get(self, request):
@@ -803,9 +925,18 @@ class DeliveryFeeRuleListCreateView(APIView):
         return Response(DeliveryFeeRuleSerializer(qs, many=True).data)
 
     @extend_schema(
-        tags=['Admin Fees'],
-        summary='Delivery fee rules (create)',
-        description='Faqat Super Admin yoki Admin. Dostavka rule larini boshqarish.',
+        tags=[TAG_FEES],
+        summary='Правила доставки: создать',
+        description='''**Назначение:** добавить диапазон суммы заказа (по товарам) и соответствующую **фиксированную** сумму доставки.
+
+**Обязательные поля в теле:** как минимум `min_order_amount`; остальные — по модели (см. подсказки полей в схеме).
+
+**Рекомендации:**
+- Диапазоны не должны пересекаться по смыслу для активных правил, иначе сработает **первое** по сортировке — проверяйте порядок `min_order_amount`.
+- Для «от суммы и выше» оставьте `max_order_amount` пустым (`null`).
+
+**Доступ:** только **Super Admin** или **Admin**. Успех — `201` с созданной записью.
+''',
         request=DeliveryFeeRuleSerializer,
         responses=DeliveryFeeRuleSerializer,
     )
@@ -824,9 +955,14 @@ class DeliveryFeeRuleDetailView(APIView):
     permission_classes = [IsAuthenticated]
 
     @extend_schema(
-        tags=['Admin Fees'],
-        summary='Delivery fee rule (update)',
-        description='Faqat Super Admin yoki Admin.',
+        tags=[TAG_FEES],
+        summary='Правило доставки: обновить',
+        description='''**Назначение:** частично изменить правило по `id` (границы сумм, сумма доставки, флаг активности).
+
+**Параметр пути:** `id` — первичный ключ записи `DeliveryFeeRule`.
+
+**Доступ:** только **Super Admin** или **Admin**. Нет записи — `404`; ошибки валидации — `400`.
+''',
         request=DeliveryFeeRuleSerializer,
         responses=DeliveryFeeRuleSerializer,
     )
@@ -845,9 +981,15 @@ class DeliveryFeeRuleDetailView(APIView):
         return Response(serializer.data)
 
     @extend_schema(
-        tags=['Admin Fees'],
-        summary='Delivery fee rule (delete)',
-        description='Faqat Super Admin yoki Admin.',
+        tags=[TAG_FEES],
+        summary='Правило доставки: удалить',
+        description='''**Назначение:** безвозвратно удалить правило доставки по `id`.
+
+**Внимание:** после удаления расчёт доставки для попадавших ранее в это правило сумм может перейти на другое правило или на ноль.
+
+**Доступ:** только **Super Admin** или **Admin**. Нет записи — `404`. Успех — `204` без тела.
+''',
+        responses={204: OpenApiResponse(description='Правило удалено')},
     )
     def delete(self, request, pk):
         denied = ensure_admin_or_super_admin(request)

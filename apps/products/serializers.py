@@ -10,6 +10,11 @@ from parler.utils.context import switch_language
 
 from .models import Badge, Unit, Products, ProductBarcode, ProductImage, ProductSavedUser
 from apps.categories.models import Category
+from apps.core.enums import ProductUnit
+from apps.products.catalog_units import format_size_label
+from apps.products.fields import ProductUnitAmountField, ProductUnitChoiceField
+from apps.products.product_unit_specs import get_product_unit_spec
+from apps.products.unit_pricing import unit_amount_for_product
 from apps.core.enums import Language
 
 
@@ -234,14 +239,43 @@ class ProductListSerializer(serializers.ModelSerializer):
     barcodes = serializers.SerializerMethodField()
     images = serializers.SerializerMethodField()
     is_favourite = serializers.SerializerMethodField()
+    size_label = serializers.SerializerMethodField(
+        help_text='Ko‘rinish uchun hajm (product_unit + unit_amount).',
+    )
 
     class Meta:
         model = Products
         fields = [
             'id', 'translations', 'badge', 'unit', 'shelf_location', 'quantity', 'price',
             'price_discount', 'discount_percentage', 'is_discount', 'is_active',
+            'sale_unit', 'product_unit', 'unit_amount', 'size_label',
             'category', 'barcodes', 'images', 'is_favourite', 'created_at', 'updated_at',
         ]
+        extra_kwargs = {
+            'product_unit': {
+                'help_text': 'Narx birligi: piece, kg, gram, liter, ml.',
+            },
+            'unit_amount': {
+                'help_text': 'Shu birlikdagi hajm (1 kg, 500 ml, …).',
+            },
+            'sale_unit': {
+                'help_text': 'Ichki (piece/weight). Avtomatik.',
+            },
+        }
+
+    def _display_lang(self) -> str:
+        request = self.context.get('request')
+        if not request:
+            return 'ru'
+        lang = (request.query_params.get('lang') or request.headers.get('Accept-Language') or 'ru')[:2]
+        return lang if lang in ('ru', 'uz', 'en') else 'ru'
+
+    def get_size_label(self, obj) -> str:
+        return format_size_label(
+            obj.product_unit,
+            unit_amount_for_product(obj),
+            lang=self._display_lang(),
+        )
 
     def get_translations(self, obj) -> Dict:
         return get_product_translations(obj)
@@ -283,9 +317,29 @@ class ProductListSerializer(serializers.ModelSerializer):
         return False
 
 
+class ProductUnitOptionSerializer(serializers.Serializer):
+    """One row from GET /products/unit-options/."""
+    value = serializers.CharField()
+    label = serializers.CharField()
+    label_uz = serializers.CharField()
+    family = serializers.CharField()
+    unit_amount_default = serializers.CharField()
+    unit_amount_hint = serializers.CharField()
+    price_hint = serializers.CharField()
+    stock_quantity_hint = serializers.CharField()
+    order_quantity_hint = serializers.CharField()
+    cart_units_allowed = serializers.ListField(child=serializers.CharField())
+    example = serializers.CharField()
+
+
 class ProductCreateSerializer(serializers.Serializer):
-    """Serializer for creating products."""
+    """Create / update product (admin API)."""
     translations = serializers.JSONField(required=True, error_messages=_REQUIRED)
+    product_unit = ProductUnitChoiceField(
+        required=False,
+        default=ProductUnit.PIECE.value,
+    )
+    unit_amount = ProductUnitAmountField(required=False)
     badge = serializers.PrimaryKeyRelatedField(
         queryset=Badge.objects.filter(is_deleted=False), 
         required=False, 
@@ -328,14 +382,34 @@ class ProductCreateSerializer(serializers.Serializer):
     barcode_number = serializers.CharField(required=False, allow_blank=True, allow_null=True)
     shelf_location = serializers.CharField(required=False, allow_blank=True, allow_null=True, max_length=50)
 
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        if self.partial:
+            self.fields['translations'].required = False
+            self.fields['price'].required = False
+
     def validate_translations(self, value):
         if value is not None and not isinstance(value, dict):
             raise serializers.ValidationError('translations должен быть объектом')
         return value
 
+    def validate_unit_amount(self, value):
+        if value is None or value <= 0:
+            return Decimal('1')
+        return value
+
     def validate(self, attrs):
         if not self.partial and 'category' not in attrs:
             raise serializers.ValidationError({'category': 'Обязательное поле.'})
+        pu = attrs.get('product_unit') or ProductUnit.PIECE.value
+        attrs['product_unit'] = pu
+        spec = get_product_unit_spec(pu)
+        if attrs.get('unit_amount') is None:
+            attrs['unit_amount'] = Decimal(spec.unit_amount_default)
+        if pu == ProductUnit.PIECE.value and attrs['unit_amount'] != Decimal('1'):
+            raise serializers.ValidationError({
+                'unit_amount': 'Для product_unit=piece укажите unit_amount=1.',
+            })
         return attrs
 
 

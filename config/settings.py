@@ -54,6 +54,7 @@ LOCAL_APPS = [
     'apps.orders',
     'apps.news',
     'apps.realtime',
+    'apps.inventory',
 ]
 
 THIRD_PARTY_APPS = [
@@ -185,6 +186,10 @@ TIME_ZONE = 'Asia/Tashkent'
 USE_I18N = True
 USE_TZ = True
 
+# Fallback when a date has no "Рабочие часы по дням" row in DB (see BusyDayWorkingHours model).
+BUSY_SLOT_WORKING_START = os.getenv('BUSY_SLOT_WORKING_START', '06:00')
+BUSY_SLOT_WORKING_END = os.getenv('BUSY_SLOT_WORKING_END', '23:00')
+
 LOCALE_PATHS = [os.path.join(BASE_DIR, 'locale')]
 
 # =============================================================================
@@ -295,9 +300,10 @@ CSRF_TRUSTED_ORIGINS = CORS_ALLOWED_ORIGINS.copy()
 # API DOCUMENTATION (DRF Spectacular)
 # =============================================================================
 
+from apps.orders.openapi_tags import ORDER_OPENAPI_TAGS
+
 SPECTACULAR_SETTINGS = {
-    'TITLE': 'Safed Ecommerce API',
-    'DESCRIPTION': 'Safed Ecommerce API - Документация',
+    'TITLE': 'Safed API',
     'VERSION': '1.0.0',
     'SERVE_INCLUDE_SCHEMA': False,
     'SCHEMA_PATH_PREFIX': '/api/v1',
@@ -307,7 +313,80 @@ SPECTACULAR_SETTINGS = {
     'SWAGGER_UI_SETTINGS': {
         'deepLinking': True,
         'persistAuthorization': True,
+        'displayRequestDuration': True,
+        'filter': True,
+        'tryItOutEnabled': True,
     },
+    'DESCRIPTION': """
+## Safed — мобильный бэкенд (API v1)
+
+Базовый префикс: **`/api/v1/`**.
+
+### Авторизация
+Большинство методов требуют **JWT** в заголовке: `Authorization: Bearer <access_token>`.
+Получение токена — раздел **«Авторизация»** (OTP / логин по телефону).
+
+### Buyurtma (Swagger tartibi — `01` … `12 Order`)
+1. **01 Delivery Slots** — `GET /checkout/delivery-slots/` (yoki `/busy-slots/`)
+2. **02 Addresses** — `GET/POST /addresses/`
+3. **03 Pricing Preview** — `POST /checkout/pricing-preview/`
+4. **04 Create Order** — `POST /orders/` (`payment_type`: card | cash)
+5. **05 Payment** — `POST /orders/{id}/click-payment/` (card); CLICK callbacks `payments/click/prepare|complete`
+6. **06 My Orders** — `GET /orders/my/`, `POST /orders/{id}/cancel/`
+7. **07 Picking** — `PATCH picking-lines`, `POST picking/scan` (staff)
+8. **08 Admin Operations** — status, courier, lists
+9. **09 Courier** — `GET /orders/courier/my/`
+10. **10 Order Detail** — `GET/PUT/DELETE /orders/{id}/`
+
+### Статусы заказа
+`created` → `confirmed` → `picking` → `shipped` → `delivered`, а также `rejected`, `cancelled`.
+Отмена пользователем: `POST /orders/<id>/cancel/` только в `created` (comment и/или `reason_ids`).
+
+### Cash (naqd)
+- QR faqat `GET /orders/my/` → `cash_qr_code` (pending cash).
+- Kuryer: `PATCH /orders/cash/confirm/` (`order_id`, `qr_code`) — status `shipped`, paid + delivered.
+- WebSocket: `ws/orders/delivery/?token=<JWT>` — cash delivery events (order_id body da).
+
+### Роли
+Группы Django: **Super Admin**, **Admin**, **Operator**, **Courier**, **User** — доступ к разделам зависит от роли (см. описания тегов ниже).
+
+### Qaysi `id` nima? (muhim)
+| Qayerda | Maydon | Ma’nosi |
+|---------|--------|---------|
+| URL `/orders/{id}/` | **`id`** | **Buyurtma ID** — `POST /orders/` yoki `GET /orders/my/` → `"id": 4` |
+| URL `.../picking-lines/{line_id}/` | **`line_id`** | **Qator ID** — `GET /orders/{id}/` → `order_products[].id` (masalan `2`) |
+| Body `products_data[]` | **`product_id`** | **Katalog mahsulot** — `Products.id` |
+| Javob `order_products[]` | **`id`** | = `line_id` (qator) |
+| Javob `order_products[]` | **`product_id`** | = katalog mahsulot |
+| `/addresses/{pk}/` | **`pk`** | Saqlangan manzil ID |
+""",
+    'TAGS': ORDER_OPENAPI_TAGS + [
+        {'name': 'Инвентаризация / Поставщики', 'description': 'Справочник поставщиков (Super Admin / Admin).'},
+        {'name': 'Инвентаризация / Приходы', 'description': 'Приходные документы и заголовки.'},
+        {'name': 'Инвентаризация / Позиции прихода', 'description': 'Строки прихода, штрихкоды при приёмке.'},
+        {'name': 'Инвентаризация / Штрихкоды', 'description': 'Поиск товара по штрихкоду.'},
+        {'name': 'Посты', 'description': 'Новости и посты (контент).'},
+        {'name': 'Изображения постов', 'description': 'Медиа к постам.'},
+        {'name': 'Products', 'description': 'Каталог: список и детали товаров для приложения.'},
+        {'name': 'Products (Admin)', 'description': 'Управление товарами и медиа (админ).'},
+        {'name': 'Бейджи', 'description': 'Бейджи товаров (переводы Parler).'},
+        {'name': 'Единицы', 'description': 'Единицы измерения (переводы).'},
+        {'name': 'Штрихкоды', 'description': 'Штрихкоды продуктов.'},
+        {'name': 'Изображения продуктов', 'description': 'Изображения каталога.'},
+        {'name': 'Сохранённые', 'description': 'Избранное пользователя.'},
+        {'name': 'Категории', 'description': 'Дерево категорий и CRUD (по ролям).'},
+        {'name': 'Chat', 'description': 'Чаты и сообщения (realtime).'},
+        {'name': 'Notifications', 'description': 'Уведомления пользователя: список, непрочитанные, отметка прочитанным.'},
+        {'name': 'Авторизация', 'description': 'OTP, токены JWT, регистрация.'},
+        {'name': 'Админ', 'description': 'Создание пользователей админом, служебные действия.'},
+        {'name': 'Пользователи', 'description': 'Профиль и данные текущего пользователя.'},
+        {'name': 'Персонал', 'description': 'Управление пользователями для персонала (по ролям).'},
+        {'name': 'Обычный пользователь', 'description': 'Назначение роли User.'},
+        {'name': 'Простой администратор', 'description': 'Назначение роли Admin.'},
+        {'name': 'Оператор', 'description': 'Назначение роли Operator.'},
+        {'name': 'Курьер', 'description': 'Назначение роли Courier.'},
+        {'name': 'Устройства', 'description': 'Push-устройства (FCM и т.п.).'},
+    ],
 }
 
 # =============================================================================
@@ -340,6 +419,19 @@ CHANNEL_LAYERS = {
         'BACKEND': 'channels.layers.InMemoryChannelLayer',
     },
 }
+
+# =============================================================================
+# CELERY (background tasks — optional)
+# =============================================================================
+
+CELERY_BROKER_URL = os.getenv('CELERY_BROKER_URL', os.getenv('REDIS_URL', 'redis://localhost:6379/2'))
+CELERY_RESULT_BACKEND = os.getenv('CELERY_RESULT_BACKEND', CELERY_BROKER_URL)
+CELERY_ACCEPT_CONTENT = ['json']
+CELERY_TASK_SERIALIZER = 'json'
+CELERY_RESULT_SERIALIZER = 'json'
+CELERY_TIMEZONE = TIME_ZONE
+CELERY_TASK_TRACK_STARTED = True
+CELERY_TASK_TIME_LIMIT = 30 * 60
 
 # =============================================================================
 # RATE LIMITING
@@ -397,3 +489,14 @@ LOGGING = {
         },
     },
 }
+
+# =============================================================================
+# CLICK (https://docs.click.uz/)
+# =============================================================================
+
+CLICK_SERVICE_ID = int(os.getenv('CLICK_SERVICE_ID', '101345') or '0')
+CLICK_MERCHANT_ID = int(os.getenv('CLICK_MERCHANT_ID', '38156') or '0')
+CLICK_SECRET_KEY = os.getenv('CLICK_SECRET_KEY', '')
+CLICK_MERCHANT_USER_ID = int(os.getenv('CLICK_MERCHANT_USER_ID', '82888') or '0') or None
+CLICK_PAY_URL = os.getenv('CLICK_PAY_URL', 'https://my.click.uz/services/pay')
+CLICK_RETURN_URL = os.getenv('CLICK_RETURN_URL', '')

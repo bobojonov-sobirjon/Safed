@@ -11,11 +11,13 @@ urlpatterns = [
     path('units/<int:pk>/', views.UnitDetailView.as_view(), name='unit-detail'),
 
     # Product
+    path('products/unit-options/', views.ProductUnitOptionsView.as_view(), name='product-unit-options'),
     path('products/', views.ProductListCreateView.as_view(), name='product-list-create'),
     path('products/<int:pk>/', views.ProductDetailView.as_view(), name='product-detail'),
 
     # ProductBarcode
     path('product-barcodes/<int:pk>/', views.ProductBarcodeDetailView.as_view(), name='product-barcode-detail'),
+    path('products/<int:product_id>/barcodes/generate/', views.ProductBarcodeGenerateView.as_view(), name='product-barcode-generate'),
 
     # ProductImage
     path('product-images/<int:pk>/', views.ProductImageDetailView.as_view(), name='product-image-detail'),
