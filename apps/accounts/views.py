@@ -27,9 +27,8 @@ from .serializers import (
     PasswordChangeByAdminSerializer,
     PasswordChangeByUserSerializer,
     UserDeviceSerializer,
-    UserDeviceCreateSerializer,
-    UserDeviceUpdateSerializer,
-    UserDeviceActivateSerializer,
+    UserDeviceWriteSerializer,
+    UserDevicePatchSerializer,
 )
 from .services.eskiz import send_sms
 
@@ -664,124 +663,85 @@ class UserPasswordChangeByUserView(APIView):
         return Response({'detail': 'Пароль изменён'})
 
 
-# ========== UserDevice (Push notifications) ==========
+# ========== UserDevice (FCM push) ==========
+
+def _get_user_device(user, device_token: str) -> UserDevice | None:
+    try:
+        return UserDevice.objects.get(user=user, device_token=device_token)
+    except UserDevice.DoesNotExist:
+        return None
+
 
 @extend_schema_view(
-    get=extend_schema(tags=['Устройства'], summary='Мои устройства'),
+    get=extend_schema(
+        tags=['Устройства'],
+        summary='Mening qurilmalarim',
+        description='Faqat `request.user` ga tegishli FCM tokenlar.',
+        responses={200: UserDeviceSerializer(many=True)},
+    ),
     post=extend_schema(
         tags=['Устройства'],
-        summary='Добавить устройство',
-        description='Регистрация устройства для push-уведомлений.',
-        request={
-            'application/json': {
-                'type': 'object',
-                'properties': {
-                    'device_token': {'type': 'string', 'description': 'FCM/APNs токен', 'example': 'fMd3sT7...'},
-                    'device_type': {'type': 'string', 'description': 'Тип устройства', 'enum': ['android', 'ios'], 'example': 'android'},
-                },
-                'required': ['device_token', 'device_type'],
-            }
-        },
+        summary='FCM token ro‘yxatdan o‘tkazish',
+        description='Body: `device_token`, `device_type` (`android` | `ios` | `web`). Bir xil token qayta kelsa yangilanadi.',
+        request=UserDeviceWriteSerializer,
+        responses={201: UserDeviceSerializer},
+    ),
+    put=extend_schema(
+        tags=['Устройства'],
+        summary='Token / turini yangilash',
+        description='URL da id yo‘q — `device_token` bo‘yicha shu user yozuvi topiladi.',
+        request=UserDeviceWriteSerializer,
+        responses={200: UserDeviceSerializer},
+    ),
+    patch=extend_schema(
+        tags=['Устройства'],
+        summary='Push yoqish / o‘chirish',
+        description='`device_token` — qaysi qurilma; `is_active` — true/false.',
+        request=UserDevicePatchSerializer,
+        responses={200: UserDeviceSerializer},
     ),
 )
-class UserDeviceListCreateView(APIView):
+class UserDeviceView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
-        devices = UserDevice.objects.filter(user=request.user).order_by('-created_at')
-        data = UserDeviceSerializer(devices, many=True).data
-        return Response(data)
+        devices = UserDevice.objects.filter(user=request.user).order_by('-updated_at')
+        return Response(UserDeviceSerializer(devices, many=True).data)
 
     def post(self, request):
-        serializer = UserDeviceCreateSerializer(data=request.data)
-        if not serializer.is_valid():
-            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
-        v = serializer.validated_data
-
-        device = UserDevice.objects.create(
+        ser = UserDeviceWriteSerializer(data=request.data)
+        if not ser.is_valid():
+            return Response(ser.errors, status=status.HTTP_400_BAD_REQUEST)
+        v = ser.validated_data
+        device, created = UserDevice.objects.update_or_create(
             user=request.user,
             device_token=v['device_token'],
-            device_type=v['device_type'],
+            defaults={'device_type': v['device_type'], 'is_active': True},
         )
-        data = UserDeviceSerializer(device).data
-        return Response(data, status=status.HTTP_201_CREATED)
+        code = status.HTTP_201_CREATED if created else status.HTTP_200_OK
+        return Response(UserDeviceSerializer(device).data, status=code)
 
-
-@extend_schema(tags=['Устройства'], summary='Устройство по ID')
-class UserDeviceDetailView(APIView):
-    permission_classes = [IsAuthenticated]
-
-    def get(self, request, pk):
-        try:
-            device = UserDevice.objects.get(pk=pk, user=request.user)
-        except UserDevice.DoesNotExist:
-            return Response({'detail': 'Не найден'}, status=status.HTTP_404_NOT_FOUND)
+    def put(self, request):
+        ser = UserDeviceWriteSerializer(data=request.data)
+        if not ser.is_valid():
+            return Response(ser.errors, status=status.HTTP_400_BAD_REQUEST)
+        v = ser.validated_data
+        device = _get_user_device(request.user, v['device_token'])
+        if not device:
+            return Response({'detail': 'Qurilma topilmadi'}, status=status.HTTP_404_NOT_FOUND)
+        device.device_type = v['device_type']
+        device.save(update_fields=['device_type', 'updated_at'])
         return Response(UserDeviceSerializer(device).data)
 
-
-@extend_schema(
-    tags=['Устройства'],
-    summary='Обновить устройство',
-    description='Обновление данных устройства. Все поля опциональны.',
-    request={
-        'application/json': {
-            'type': 'object',
-            'properties': {
-                'device_token': {'type': 'string', 'description': 'FCM/APNs токен', 'example': 'newToken...'},
-                'device_type': {'type': 'string', 'enum': ['android', 'ios'], 'example': 'ios'},
-            },
-        }
-    },
-)
-class UserDeviceUpdateView(APIView):
-    permission_classes = [IsAuthenticated]
-
-    def put(self, request, pk):
-        serializer = UserDeviceUpdateSerializer(data=request.data, partial=True)
-        if not serializer.is_valid():
-            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
-        v = serializer.validated_data
-
-        try:
-            device = UserDevice.objects.get(pk=pk, user=request.user)
-        except UserDevice.DoesNotExist:
-            return Response({'detail': 'Не найден'}, status=status.HTTP_404_NOT_FOUND)
-        if 'device_token' in v:
-            device.device_token = v['device_token']
-        if 'device_type' in v:
-            device.device_type = v['device_type']
-        device.save()
-        return Response(UserDeviceSerializer(device).data)
-
-
-@extend_schema(
-    tags=['Устройства'],
-    summary='Активировать/деактивировать',
-    description='Включение или отключение push-уведомлений для устройства.',
-    request={
-        'application/json': {
-            'type': 'object',
-            'properties': {
-                'is_activate': {'type': 'boolean', 'description': 'Активировать устройство', 'example': True},
-            },
-            'required': ['is_activate'],
-        }
-    },
-)
-class UserDeviceActivateView(APIView):
-    permission_classes = [IsAuthenticated]
-
-    def patch(self, request, pk):
-        serializer = UserDeviceActivateSerializer(data=request.data)
-        if not serializer.is_valid():
-            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
-        is_activate = serializer.validated_data['is_activate']
-
-        try:
-            device = UserDevice.objects.get(pk=pk, user=request.user)
-        except UserDevice.DoesNotExist:
-            return Response({'detail': 'Не найден'}, status=status.HTTP_404_NOT_FOUND)
-        device.is_activate = is_activate
-        device.save()
+    def patch(self, request):
+        ser = UserDevicePatchSerializer(data=request.data)
+        if not ser.is_valid():
+            return Response(ser.errors, status=status.HTTP_400_BAD_REQUEST)
+        v = ser.validated_data
+        device = _get_user_device(request.user, v['device_token'])
+        if not device:
+            return Response({'detail': 'Qurilma topilmadi'}, status=status.HTTP_404_NOT_FOUND)
+        device.is_active = v['is_active']
+        device.save(update_fields=['is_active', 'updated_at'])
         return Response(UserDeviceSerializer(device).data)
 

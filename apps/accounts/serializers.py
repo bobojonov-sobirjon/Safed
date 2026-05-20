@@ -102,24 +102,32 @@ class PasswordChangeByUserSerializer(serializers.Serializer):
     code = serializers.CharField(required=True, error_messages=_REQUIRED)
 
 
-# ========== UserDevice (Push notifications) ==========
+# ========== UserDevice (FCM push) ==========
+
+def _validate_device_type(value: str) -> str:
+    from apps.core.enums import DeviceType
+
+    allowed = {c[0] for c in DeviceType.choices()}
+    if value not in allowed:
+        raise serializers.ValidationError(f'device_type: {", ".join(sorted(allowed))}')
+    return value
+
 
 class UserDeviceSerializer(serializers.ModelSerializer):
     class Meta:
         model = UserDevice
-        fields = ['id', 'user', 'device_token', 'device_type', 'is_activate', 'created_at', 'updated_at']
-        read_only_fields = ['user', 'created_at', 'updated_at']
+        fields = ['id', 'device_token', 'device_type', 'is_active', 'created_at', 'updated_at']
+        read_only_fields = fields
 
 
-class UserDeviceCreateSerializer(serializers.Serializer):
+class UserDeviceWriteSerializer(serializers.Serializer):
     device_token = serializers.CharField(required=True, max_length=512, error_messages=_REQUIRED)
     device_type = serializers.CharField(required=True, max_length=50, error_messages=_REQUIRED)
 
-
-class UserDeviceUpdateSerializer(serializers.Serializer):
-    device_token = serializers.CharField(required=False, max_length=512)
-    device_type = serializers.CharField(required=False, max_length=50)
+    def validate_device_type(self, value):
+        return _validate_device_type(value)
 
 
-class UserDeviceActivateSerializer(serializers.Serializer):
-    is_activate = serializers.BooleanField(required=True)
+class UserDevicePatchSerializer(serializers.Serializer):
+    device_token = serializers.CharField(required=True, max_length=512, error_messages=_REQUIRED)
+    is_active = serializers.BooleanField(required=True)

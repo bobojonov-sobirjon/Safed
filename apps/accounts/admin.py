@@ -1,6 +1,6 @@
 from django.contrib import admin
 from django.contrib.auth.admin import UserAdmin as BaseUserAdmin
-from .models import CustomUser, PhoneOTP
+from .models import CustomUser, PhoneOTP, UserDevice
 
 
 @admin.register(CustomUser)
@@ -19,3 +19,11 @@ class CustomUserAdmin(BaseUserAdmin):
 class PhoneOTPAdmin(admin.ModelAdmin):
     list_display = ['id', 'phone', 'code', 'is_verified', 'created_at']
     list_filter = ['is_verified']
+
+
+@admin.register(UserDevice)
+class UserDeviceAdmin(admin.ModelAdmin):
+    list_display = ['id', 'user', 'device_type', 'is_active', 'created_at']
+    list_filter = ['device_type', 'is_active']
+    search_fields = ['user__phone', 'device_token']
+    raw_id_fields = ['user']

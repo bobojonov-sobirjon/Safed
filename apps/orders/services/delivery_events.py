@@ -22,7 +22,12 @@ def courier_delivery_group(user_id: int) -> str:
     return f'delivery_courier_{user_id}'
 
 
-def _recipient_groups_for_order(order_id: int) -> List[str]:
+def _recipient_groups_for_order(
+    order_id: int,
+    *,
+    include_customer: bool = True,
+    include_couriers: bool = True,
+) -> List[str]:
     from apps.orders.models import Order, OrderCourier
 
     groups: List[str] = []
@@ -31,10 +36,14 @@ def _recipient_groups_for_order(order_id: int) -> List[str]:
     except Order.DoesNotExist:
         return groups
 
-    groups.append(customer_delivery_group(order.user_id))
-    courier_ids = OrderCourier.objects.filter(order_id=order_id).values_list('courier_id', flat=True)
-    for cid in courier_ids:
-        groups.append(courier_delivery_group(cid))
+    if include_customer:
+        groups.append(customer_delivery_group(order.user_id))
+    if include_couriers:
+        courier_ids = OrderCourier.objects.filter(order_id=order_id).values_list(
+            'courier_id', flat=True,
+        )
+        for cid in courier_ids:
+            groups.append(courier_delivery_group(cid))
     return groups
 
 
@@ -43,6 +52,8 @@ def broadcast_order_delivery_event(
     order_id: int,
     event: str,
     data: Dict[str, Any],
+    include_customer: bool = True,
+    include_couriers: bool = True,
 ) -> None:
     channel_layer = get_channel_layer()
     if channel_layer is None:
@@ -55,7 +66,11 @@ def broadcast_order_delivery_event(
         'data': {**data, 'order_id': order_id},
     }
     seen = set()
-    for group in _recipient_groups_for_order(order_id):
+    for group in _recipient_groups_for_order(
+        order_id,
+        include_customer=include_customer,
+        include_couriers=include_couriers,
+    ):
         if group in seen:
             continue
         seen.add(group)

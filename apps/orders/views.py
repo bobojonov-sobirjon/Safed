@@ -8,7 +8,7 @@ from drf_spectacular.utils import extend_schema, extend_schema_view, OpenApiPara
 from drf_spectacular.types import OpenApiTypes
 
 from django.db import transaction
-from django.db.models import Sum, Count, F
+from django.db.models import Sum, Count, F, Q
 from django.db.models.functions import TruncDate, TruncWeek, TruncMonth
 from django.utils.dateparse import parse_date
 from datetime import date as date_cls, datetime as datetime_cls
@@ -77,6 +77,21 @@ def user_is_super_admin(user):
 
 def user_is_admin(user):
     return user.groups.filter(name__in=UserGroup.admin_groups()).exists()
+
+
+def user_is_operator_or_super_admin(user):
+    return user.groups.filter(
+        name__in=[UserGroup.OPERATOR.value, UserGroup.SUPER_ADMIN.value],
+    ).exists()
+
+
+def finished_order_products_q():
+    """Revenue / stats: cash completed yoki card delivered+paid."""
+    return Q(order__status=OrderStatus.COMPLETED.value) | Q(
+        order__status=OrderStatus.DELIVERED.value,
+        order__payment_type=PaymentType.CARD.value,
+        order__payment_status=PaymentStatus.PAID.value,
+    )
 
 
 def ensure_admin_or_super_admin(request):
@@ -213,6 +228,9 @@ class OrderCreateView(APIView):
             if order.payment_type == PaymentType.CASH.value:
                 from .services.cash_delivery import assign_cash_qr_token
                 assign_cash_qr_token(order)
+                from apps.realtime.services.order_notifications import on_order_created_cash
+
+                on_order_created_cash(order.pk)
 
         return Response(OrderListSerializer(order, context={'request': request}).data, status=status.HTTP_201_CREATED)
 
@@ -267,9 +285,15 @@ class OrderAddCourierView(APIView):
         if not user_is_courier(courier):
             return Response({'courier_id': ['Пользователь не является курьером']}, status=status.HTTP_400_BAD_REQUEST)
 
+        previous_status = order.status
         OrderCourier.objects.get_or_create(order=order, courier=courier)
         order.status = OrderStatus.SHIPPED.value
         order.save()
+
+        from apps.realtime.services.order_notifications import on_courier_assigned, on_status_changed
+
+        on_courier_assigned(order.pk, courier.pk)
+        on_status_changed(order.pk, OrderStatus.SHIPPED.value, previous_status)
 
         return Response(OrderListSerializer(order, context={'request': request}).data)
 
@@ -290,9 +314,16 @@ class OrderAddCourierView(APIView):
 - `confirmed` → `picking`, `rejected`, `cancelled`
 - `picking` → `shipped`, `rejected`, `cancelled`
 - `shipped` → `delivered`, `rejected`
+- `delivered` → faqat **cash QR** (`PATCH /orders/cash/confirm/`) → `completed`
 
-### `delivered`
-При первом переходе в **`delivered`** со склада списывается количество по строкам заказа (для весовых позиций — округление вверх до целых единиц учёта).
+### `delivered` (kuryer)
+Kuryer manzilga yetdi. **Cash** da to‘lov hali emas — keyin QR confirm.
+
+### `completed` (cash)
+Faqat **`PATCH /orders/cash/confirm/`** orqali. To‘lov + ombor spisanie.
+
+### Card
+`delivered` — yakuniy (to‘lov allaqachon o‘tgan); ombor spisanie `delivered` da.
 
 ### Тело
 - **`status`** — значение из enum в схеме.
@@ -318,35 +349,45 @@ class OrderStatusChangeView(APIView):
         if not user_is_staff(request.user):
             return Response({'detail': 'Доступ запрещён'}, status=status.HTTP_403_FORBIDDEN)
 
-        if not order.can_transition_to(new_status):
-            return Response({'detail': 'Недопустимый переход статуса'}, status=status.HTTP_400_BAD_REQUEST)
-
-        if (
-            new_status == OrderStatus.DELIVERED.value
-            and order.payment_type == PaymentType.CASH.value
-        ):
+        if new_status == OrderStatus.COMPLETED.value:
             return Response(
                 {
-                    'detail': 'Cash buyurtma: PATCH delivered o‘rniga PATCH /orders/cash/confirm/ (QR) ishlating.',
+                    'detail': 'Status completed faqat PATCH /orders/cash/confirm/ (QR) orqali.',
                     'code': 'cash_use_qr_confirm',
                 },
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
+        if not order.can_transition_to(new_status):
+            return Response({'detail': 'Недопустимый переход статуса'}, status=status.HTTP_400_BAD_REQUEST)
+
         previous_status = order.status
         order.status = new_status
 
         if new_status == OrderStatus.DELIVERED.value:
-            from .pricing import compute_order_settlement
+            from django.utils import timezone
 
-            compute_order_settlement(order)
+            if not order.delivered_at:
+                order.delivered_at = timezone.now()
+            if order.payment_type != PaymentType.CASH.value:
+                from .pricing import compute_order_settlement
+
+                compute_order_settlement(order)
 
         order.save()
 
-        if previous_status != OrderStatus.DELIVERED.value and new_status == OrderStatus.DELIVERED.value:
+        if (
+            previous_status != OrderStatus.DELIVERED.value
+            and new_status == OrderStatus.DELIVERED.value
+            and order.payment_type != PaymentType.CASH.value
+        ):
             from .services.cash_delivery import deduct_order_stock
 
             deduct_order_stock(order)
+
+        from apps.realtime.services.order_notifications import on_status_changed
+
+        on_status_changed(order.pk, new_status, previous_status)
 
         return Response(OrderListSerializer(order, context={'request': request}).data)
 
@@ -543,6 +584,19 @@ class OrderDetailView(APIView):
             .prefetch_related('cancel_reasons')
             .get(pk=order.pk)
         )
+
+        if user_is_operator_or_super_admin(request.user) and order.user_id != request.user.pk:
+            active = {
+                OrderStatus.CONFIRMED.value,
+                OrderStatus.PICKING.value,
+                OrderStatus.SHIPPED.value,
+                OrderStatus.CREATED.value,
+            }
+            if order.status in active:
+                from apps.realtime.services.order_notifications import on_staff_viewed_order
+
+                on_staff_viewed_order(order.pk, request.user.pk)
+
         return Response(OrderListSerializer(order, context={'request': request}).data)
 
     def put(self, request, pk):
@@ -688,7 +742,7 @@ class StatsOverviewView(APIView):
         )
         total_customers = orders_qs.values('user').distinct().count()
 
-        revenue_qs = OrderProduct.objects.filter(order__status=OrderStatus.DELIVERED.value)
+        revenue_qs = OrderProduct.objects.filter(finished_order_products_q())
         if date_from:
             revenue_qs = revenue_qs.filter(order__created_at__date__gte=date_from)
         if date_to:
@@ -771,7 +825,7 @@ class ProductStatsView(APIView):
         date_from = parse_date(date_from_str) if date_from_str else None
         date_to = parse_date(date_to_str) if date_to_str else None
 
-        op_qs = OrderProduct.objects.filter(order__status=OrderStatus.DELIVERED.value)
+        op_qs = OrderProduct.objects.filter(finished_order_products_q())
         if date_from:
             op_qs = op_qs.filter(order__created_at__date__gte=date_from)
         if date_to:

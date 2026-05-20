@@ -87,6 +87,10 @@ class OrderPickingLineUpdateView(APIView):
         except PickingError as exc:
             return Response({'detail': exc.message, 'code': exc.code}, status=status.HTTP_400_BAD_REQUEST)
 
+        from apps.realtime.services.order_notifications import on_picking_line
+
+        on_picking_line(order.pk)
+
         return _picking_response(request, order, summary)
 
 
@@ -142,5 +146,9 @@ class OrderPickingScanView(APIView):
             )
         except PickingError as exc:
             return Response({'detail': exc.message, 'code': exc.code}, status=status.HTTP_400_BAD_REQUEST)
+
+        from apps.realtime.services.order_notifications import on_picking_scan
+
+        on_picking_scan(order.pk)
 
         return _picking_response(request, order, summary)

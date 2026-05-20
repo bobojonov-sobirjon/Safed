@@ -8,6 +8,7 @@ from decimal import Decimal
 
 from django.db import models
 from django.db.models import Q
+from parler.managers import TranslatableManager, TranslatableQuerySet
 from parler.models import TranslatableModel, TranslatedFields
 
 from apps.core.enums import ProductUnit, SaleUnit
@@ -15,12 +16,29 @@ from apps.core.enums import ProductUnit, SaleUnit
 
 class SoftDeleteManager(models.Manager):
     """Manager that filters out soft-deleted objects by default."""
-    
+
     def get_queryset(self):
         return super().get_queryset().filter(is_deleted=False)
-    
+
     def all_with_deleted(self):
         return super().get_queryset()
+
+
+class TranslatableSoftDeleteQuerySet(TranslatableQuerySet):
+    """Parler + soft delete (TranslatableAdmin uchun)."""
+
+    def all_with_deleted(self):
+        return self.model.all_objects.all()
+
+
+class TranslatableSoftDeleteManager(TranslatableManager):
+    queryset_class = TranslatableSoftDeleteQuerySet
+
+    def get_queryset(self):
+        return super().get_queryset().filter(is_deleted=False)
+
+    def all_with_deleted(self):
+        return self.model.all_objects.all()
 
 
 class Badge(TranslatableModel):
@@ -54,9 +72,9 @@ class Badge(TranslatableModel):
         verbose_name='Дата обновления'
     )
     
-    objects = SoftDeleteManager()
-    all_objects = models.Manager()
-    
+    objects = TranslatableSoftDeleteManager()
+    all_objects = TranslatableManager()
+
     class Meta:
         verbose_name = 'Бейдж'
         verbose_name_plural = 'Бейджи'
@@ -97,9 +115,9 @@ class Unit(TranslatableModel):
         verbose_name='Дата обновления'
     )
     
-    objects = SoftDeleteManager()
-    all_objects = models.Manager()
-    
+    objects = TranslatableSoftDeleteManager()
+    all_objects = TranslatableManager()
+
     class Meta:
         verbose_name = 'Единица измерения'
         verbose_name_plural = 'Единицы измерения'
@@ -109,7 +127,7 @@ class Unit(TranslatableModel):
         return self.safe_translation_getter('name', default=f'Unit {self.pk}')
 
 
-class ProductManager(SoftDeleteManager):
+class ProductManager(TranslatableSoftDeleteManager):
     """Custom manager for Product with optimized queries."""
     
     def active(self):
@@ -279,8 +297,8 @@ class Products(TranslatableModel):
     )
     
     objects = ProductManager()
-    all_objects = models.Manager()
-    
+    all_objects = TranslatableManager()
+
     class Meta:
         verbose_name = 'Продукт'
         verbose_name_plural = 'Продукты'

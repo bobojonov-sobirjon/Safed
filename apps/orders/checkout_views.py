@@ -333,5 +333,9 @@ class OrderUserCancelView(APIView):
             order.save(update_fields=['status', 'cancel_comment', 'cancelled_at', 'updated_at'])
             order.cancel_reasons.set(reasons)
 
+            from apps.realtime.services.order_notifications import on_order_cancelled
+
+            on_order_cancelled(order.pk)
+
         order = Order.objects.prefetch_related('cancel_reasons').get(pk=order.pk)
         return Response(OrderListSerializer(order, context={'request': request}).data)

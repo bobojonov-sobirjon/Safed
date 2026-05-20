@@ -13,6 +13,7 @@ class OrderStatus(str, Enum):
     PICKING = 'picking'
     SHIPPED = 'shipped'
     DELIVERED = 'delivered'
+    COMPLETED = 'completed'
     REJECTED = 'rejected'
     CANCELLED = 'cancelled'
 
@@ -24,6 +25,7 @@ class OrderStatus(str, Enum):
             (cls.PICKING.value, 'Picking'),
             (cls.SHIPPED.value, 'Shipped'),
             (cls.DELIVERED.value, 'Delivered'),
+            (cls.COMPLETED.value, 'Completed'),
             (cls.REJECTED.value, 'Rejected'),
             (cls.CANCELLED.value, 'Cancelled (user)'),
         ]
@@ -34,7 +36,12 @@ class OrderStatus(str, Enum):
 
     @classmethod
     def final_statuses(cls) -> List[str]:
-        return [cls.DELIVERED.value, cls.REJECTED.value, cls.CANCELLED.value]
+        return [
+            cls.DELIVERED.value,
+            cls.COMPLETED.value,
+            cls.REJECTED.value,
+            cls.CANCELLED.value,
+        ]
 
     @classmethod
     def user_cancellable_statuses(cls) -> List[str]:

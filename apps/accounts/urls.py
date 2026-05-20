@@ -31,9 +31,6 @@ urlpatterns = [
     path('users/<int:pk>/delete/', views.UserDeleteView.as_view(), name='user-delete'),
     path('users/<int:pk>/password/', views.UserPasswordChangeByAdminView.as_view(), name='user-password-change-admin'),
 
-    # UserDevice (Push notifications)
-    path('devices/', views.UserDeviceListCreateView.as_view(), name='device-list-create'),
-    path('devices/<int:pk>/', views.UserDeviceDetailView.as_view(), name='device-detail'),
-    path('devices/<int:pk>/update/', views.UserDeviceUpdateView.as_view(), name='device-update'),
-    path('devices/<int:pk>/activate/', views.UserDeviceActivateView.as_view(), name='device-activate'),
+    # UserDevice (FCM)
+    path('devices/', views.UserDeviceView.as_view(), name='user-devices'),
 ]

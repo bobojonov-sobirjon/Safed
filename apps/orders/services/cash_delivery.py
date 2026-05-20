@@ -23,7 +23,7 @@ from .delivery_events import (
 
 logger = logging.getLogger(__name__)
 
-CASH_QR_CONFIRM_STATUSES = (OrderStatus.SHIPPED.value,)
+CASH_QR_CONFIRM_STATUSES = (OrderStatus.DELIVERED.value,)
 
 
 class CashDeliveryError(Exception):
@@ -95,12 +95,12 @@ def confirm_cash_delivery_by_qr(
     if order.payment_status == PaymentStatus.PAID.value:
         raise CashDeliveryError('Buyurtma allaqachon to‘langan.', code='already_paid')
 
-    if order.status == OrderStatus.DELIVERED.value:
-        raise CashDeliveryError('Buyurtma allaqachon yetkazilgan.', code='already_delivered')
+    if order.status == OrderStatus.COMPLETED.value:
+        raise CashDeliveryError('Buyurtma allaqachon yakunlangan.', code='already_completed')
 
     if order.status not in CASH_QR_CONFIRM_STATUSES:
         raise CashDeliveryError(
-            'QR faqat status shipped da skaner qilinadi.',
+            'Avval kuryer statusni delivered qiladi, keyin QR skaner qilinadi.',
             code='status',
         )
 
@@ -116,8 +116,9 @@ def confirm_cash_delivery_by_qr(
         order.cash_qr_image.delete(save=False)
     order.cash_qr_token = None
     order.qr_confirmed_at = now
-    order.delivered_at = now
-    order.status = OrderStatus.DELIVERED.value
+    if not order.delivered_at:
+        order.delivered_at = now
+    order.status = OrderStatus.COMPLETED.value
     order.payment_status = PaymentStatus.PAID.value
     mark_order_paid_amount(order)
     compute_order_settlement(order)
@@ -141,7 +142,10 @@ def confirm_cash_delivery_by_qr(
 
     payload = {
         'order_id': order.pk,
-        'message': 'Kuryer to‘lovni tasdiqladi. Mahsulotni oldingizmi?',
+        'message': (
+            'Курьер подтвердил оплату. Вы получили заказ? '
+            'Подтвердите получение в приложении.'
+        ),
         'payment_status': order.payment_status,
         'status': order.status,
         'delivered_at': order.delivered_at.isoformat(),
@@ -151,7 +155,13 @@ def confirm_cash_delivery_by_qr(
         order_id=order.pk,
         event=EVENT_COURIER_CONFIRMED,
         data=payload,
+        include_customer=True,
+        include_couriers=False,
     )
+    from apps.realtime.services.order_notifications import on_cash_confirmed, on_status_changed
+
+    on_cash_confirmed(order.pk)
+    on_status_changed(order.pk, OrderStatus.COMPLETED.value, OrderStatus.DELIVERED.value)
     logger.info(
         'Cash QR confirmed order=%s courier=%s',
         order.pk,
@@ -180,8 +190,8 @@ def record_customer_delivery_response(
     if order.payment_type != PaymentType.CASH.value:
         raise CashDeliveryError('Faqat cash buyurtma.', code='payment_type')
 
-    if order.status != OrderStatus.DELIVERED.value:
-        raise CashDeliveryError('Buyurtma hali yetkazilmagan.', code='status')
+    if order.status != OrderStatus.COMPLETED.value:
+        raise CashDeliveryError('Buyurtma hali yakunlanmagan.', code='status')
 
     if order.customer_delivery_responded_at is not None:
         raise CashDeliveryError('Javob allaqachon yuborilgan.', code='already_responded')
@@ -194,15 +204,14 @@ def record_customer_delivery_response(
         update_fields=['customer_delivery_accepted', 'customer_delivery_responded_at', 'updated_at'],
     )
 
-    from .delivery_events import EVENT_CUSTOMER_ACCEPT, EVENT_CUSTOMER_REJECT
+    from apps.realtime.services.order_notifications import on_customer_delivery_response
 
-    event = EVENT_CUSTOMER_ACCEPT if accepted else EVENT_CUSTOMER_REJECT
-    payload = {
+    on_customer_delivery_response(order.pk, accepted=accepted)
+
+    logger.info('Customer delivery response order=%s accepted=%s', order.pk, accepted)
+    return {
         'order_id': order.pk,
         'accepted': accepted,
         'message': 'Mijoz mahsulotni oldi' if accepted else 'Mijoz rad etdi',
         'responded_at': now.isoformat(),
     }
-    broadcast_order_delivery_event(order_id=order.pk, event=event, data=payload)
-    logger.info('Customer delivery response order=%s accepted=%s', order.pk, accepted)
-    return payload

@@ -41,6 +41,9 @@ pillow>=10.0.0
 python-barcode[images]>=0.15.0
 qrcode>=7.4.0
 
+# Push (FCM)
+firebase-admin>=6.5.0
+
 # Utilities
 requests>=2.31.0
 PyYAML>=6.0.0

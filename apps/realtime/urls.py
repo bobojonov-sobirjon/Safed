@@ -9,6 +9,9 @@ from .views import (
     ChatMessageMarkReadView,
     # Notifications
     NotificationListView,
+    CustomerNotificationListView,
+    StaffNotificationListView,
+    CourierNotificationListView,
     UnreadNotificationListView,
     NotificationMarkReadView,
     NotificationMarkAllReadView,
@@ -26,6 +29,9 @@ urlpatterns = [
     
     # Notifications
     path('notifications/', NotificationListView.as_view(), name='notification-list'),
+    path('notifications/customer/', CustomerNotificationListView.as_view(), name='notification-list-customer'),
+    path('notifications/staff/', StaffNotificationListView.as_view(), name='notification-list-staff'),
+    path('notifications/courier/', CourierNotificationListView.as_view(), name='notification-list-courier'),
     path('notifications/unread/', UnreadNotificationListView.as_view(), name='notification-unread'),
     path('notifications/read-all/', NotificationMarkAllReadView.as_view(), name='notification-read-all'),
     path('notifications/<int:pk>/read/', NotificationMarkReadView.as_view(), name='notification-read'),

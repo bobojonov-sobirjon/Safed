@@ -19,10 +19,10 @@ class OrderDeliveryConsumer(AsyncWebsocketConsumer):
     yoki ws://host/ws/orders/delivery/?token=<JWT>
     yoki ws://host/ws/orders/delivery/<JWT>/
 
-    Server → client:
+    Server → mijoz (delivery WS):
     - courier_confirmed_cash_payment
-    - customer_accept_delivery
-    - customer_reject_delivery
+
+    Mijoz javobi (accept/reject) → faqat Operator/Super Admin (`ws/notifications/`).
 
     Client → server (mijoz):
     - {"action": "accept_delivery", "order_id": 5}

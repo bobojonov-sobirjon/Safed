@@ -500,3 +500,20 @@ CLICK_SECRET_KEY = os.getenv('CLICK_SECRET_KEY', '')
 CLICK_MERCHANT_USER_ID = int(os.getenv('CLICK_MERCHANT_USER_ID', '82888') or '0') or None
 CLICK_PAY_URL = os.getenv('CLICK_PAY_URL', 'https://my.click.uz/services/pay')
 CLICK_RETURN_URL = os.getenv('CLICK_RETURN_URL', '')
+
+# =============================================================================
+# Firebase (FCM) — service account from .env
+# =============================================================================
+
+FIREBASE_PROJECT_ID = os.getenv('FIREBASE_PROJECT_ID', '')
+FIREBASE_PRIVATE_KEY_ID = os.getenv('FIREBASE_PRIVATE_KEY_ID', '')
+FIREBASE_CLIENT_EMAIL = os.getenv('FIREBASE_CLIENT_EMAIL', '')
+FIREBASE_CLIENT_ID = os.getenv('FIREBASE_CLIENT_ID', '')
+FIREBASE_PRIVATE_KEY = (os.getenv('FIREBASE_PRIVATE_KEY', '') or '').replace('\\n', '\n')
+FIREBASE_AUTH_URI = os.getenv('FIREBASE_AUTH_URI', 'https://accounts.google.com/o/oauth2/auth')
+FIREBASE_TOKEN_URI = os.getenv('FIREBASE_TOKEN_URI', 'https://oauth2.googleapis.com/token')
+FIREBASE_AUTH_PROVIDER_CERT_URL = os.getenv(
+    'FIREBASE_AUTH_PROVIDER_CERT_URL',
+    'https://www.googleapis.com/oauth2/v1/certs',
+)
+FIREBASE_CLIENT_CERT_URL = os.getenv('FIREBASE_CLIENT_CERT_URL', '')

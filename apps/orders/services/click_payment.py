@@ -294,6 +294,10 @@ def _confirm_order_paid(order: Order, payment: ClickPayment, *, click_trans_id: 
     payment.click_trans_id = int(click_trans_id)
     payment.save(update_fields=['state', 'completed_at', 'click_trans_id', 'updated_at'])
 
+    from apps.realtime.services.order_notifications import on_order_click_paid
+
+    on_order_click_paid(order.pk)
+
 
 def handle_click_complete(params: Mapping[str, Any]) -> Dict[str, Any]:
     click_trans_id = params.get('click_trans_id')

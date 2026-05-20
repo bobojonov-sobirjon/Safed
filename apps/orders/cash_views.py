@@ -79,7 +79,7 @@ Kuryer QR tasdiqlagach (`courier_confirmed_cash_payment` WS) mijoz javob beradi.
 
 Xuddi WS: `{"action": "accept_delivery", "order_id": 8}`.
 
-Kuryer ham WS da `customer_accept_delivery` / `customer_reject_delivery` oladi.
+- **Operator / Super Admin** (`ws/notifications/`): «Ответ покупателя» — oldi / muammo (kuryerga **kelmaydi**)
 """,
     request=CustomerDeliveryResponseSerializer,
 )
@@ -116,13 +116,13 @@ Faqat **Courier** va faqat o‘ziga biriktirilgan buyurtma.
 
 ### Natija (muvaffaqiyat)
 - `payment_status` → **paid**
-- `status` → **delivered**
+- `status` → **completed**
 - QR **bitta marta** — keyin invalidate
 - Mijozga WebSocket: `courier_confirmed_cash_payment`
 
 ### Shartlar
-- `payment_type=cash`, `payment_status=pending`, `status=shipped`
-- `PATCH /status/` → `delivered` cash uchun **ishlamaydi**
+- `payment_type=cash`, `payment_status=pending`, **`status=delivered`** (avval kuryer PATCH delivered)
+- `completed` faqat shu API orqali — `PATCH /status/` da `completed` **ishlamaydi**
 """,
     request=CashDeliveryConfirmSerializer,
     responses={200: OrderListSerializer},

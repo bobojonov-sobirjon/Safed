@@ -13,6 +13,7 @@ from apps.accounts.models import CustomUser
 from apps.accounts.views import user_is_staff
 from apps.core.enums import UserGroup
 from .models import ChatRoom, ChatMessage, Notification
+from .notification_api import build_notifications_response
 from .serializers import (
     ChatRoomSerializer,
     ChatRoomDetailSerializer,
@@ -20,6 +21,7 @@ from .serializers import (
     ChatMessageSerializer,
     NotificationSerializer,
 )
+from apps.orders.views import user_is_courier, user_is_operator_or_super_admin
 
 
 def get_random_operator():
@@ -299,34 +301,117 @@ class ChatMessageMarkReadView(APIView):
 # Notification Views
 # =============================================================================
 
+_NOTIFICATION_GET_DESCRIPTION = """
+Barcha rollar uchun **o‘z** bildirishnomalari (`request.user`).
+
+Real-time: `ws://host/ws/notifications/<JWT>` — yangi xabar `type: notification`.
+
+### Query
+| Param | Tavsif |
+|-------|--------|
+| `is_read` | `true` / `false` |
+| `type` | Masalan `staff_new_order`, `order_delivered`, `courier_assigned` |
+| `limit` | default 50, max 100 |
+| `offset` | pagination |
+
+### Kim nima oladi (type)
+| Rol | Misollar |
+|-----|----------|
+| **Mijoz** | `order_status`, `order_delivered`, `order_click_paid`, `order_cash_confirmed`, `order_courier_assigned`, `order_picking_*`, `order_handling` |
+| **Operator / Super Admin** | `staff_new_order`, `staff_order_cancelled`, `staff_customer_delivery_response` |
+| **Kuryer** | `courier_assigned` (+ push) |
+
+Alohida URL: `/notifications/customer/`, `/notifications/staff/`, `/notifications/courier/` — xuddi shu format, rol bo‘yicha filtr.
+"""
+
+
 @extend_schema_view(
     get=extend_schema(
         tags=['Notifications'],
-        summary='Мои уведомления',
-        description='Последние **50** уведомлений текущего пользователя, сортировка по дате (новые первые).',
+        summary='Bildirishnomalar (avto — rol bo‘yicha)',
+        description=_NOTIFICATION_GET_DESCRIPTION,
+        parameters=[
+            OpenApiParameter('is_read', OpenApiTypes.BOOL, required=False),
+            OpenApiParameter('type', OpenApiTypes.STR, required=False),
+            OpenApiParameter('limit', OpenApiTypes.INT, required=False),
+            OpenApiParameter('offset', OpenApiTypes.INT, required=False),
+        ],
     ),
 )
 class NotificationListView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
-        qs = Notification.objects.filter(user=request.user).order_by('-created_at')[:50]
-        return Response(NotificationSerializer(qs, many=True).data)
+        return Response(build_notifications_response(request))
 
 
 @extend_schema_view(
     get=extend_schema(
         tags=['Notifications'],
-        summary='Непрочитанные уведомления',
-        description='Все уведомления с `is_read=false` для текущего пользователя.',
+        summary='Bildirishnomalar — mijoz',
+        description='Faqat mijozga tegishli turlar (`order_*`, `chat_*`). JWT = buyurtma egasi.',
+    ),
+)
+class CustomerNotificationListView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        return Response(build_notifications_response(request, audience='customer'))
+
+
+@extend_schema_view(
+    get=extend_schema(
+        tags=['Notifications'],
+        summary='Bildirishnomalar — Operator / Super Admin',
+        description='`staff_*` va chat. Operator yoki Super Admin JWT.',
+    ),
+)
+class StaffNotificationListView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        if not user_is_operator_or_super_admin(request.user):
+            return Response({'detail': 'Faqat Operator yoki Super Admin'}, status=status.HTTP_403_FORBIDDEN)
+        return Response(build_notifications_response(request, audience='staff'))
+
+
+@extend_schema_view(
+    get=extend_schema(
+        tags=['Notifications'],
+        summary='Bildirishnomalar — kuryer',
+        description='`courier_assigned` va boshqalar. Courier JWT.',
+    ),
+)
+class CourierNotificationListView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        if not user_is_courier(request.user):
+            return Response({'detail': 'Faqat Courier'}, status=status.HTTP_403_FORBIDDEN)
+        return Response(build_notifications_response(request, audience='courier'))
+
+
+@extend_schema_view(
+    get=extend_schema(
+        tags=['Notifications'],
+        summary='Faqat o‘qilmaganlar',
+        description='`is_read=false`, rol bo‘yicha avto-filtr. Query: `audience=customer|staff|courier` (ixtiyoriy).',
+        parameters=[
+            OpenApiParameter(
+                'audience',
+                OpenApiTypes.STR,
+                required=False,
+                description='customer | staff | courier — default: JWT rolidan',
+            ),
+        ],
     ),
 )
 class UnreadNotificationListView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
-        qs = Notification.objects.filter(user=request.user, is_read=False).order_by('-created_at')
-        return Response(NotificationSerializer(qs, many=True).data)
+        audience = (request.query_params.get('audience') or '').strip() or None
+        return Response(build_notifications_response(request, audience=audience, is_read=False))
 
 
 @extend_schema_view(

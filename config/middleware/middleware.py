@@ -15,9 +15,12 @@ class JsonErrorResponseMiddleware:
         return response
 
     def process_exception(self, request, exception):
-        # Skip middleware for schema/docs endpoints
-        if request.path in ['/schema/', '/docs/', '/redoc/']:
-            return None  # Let Django handle it normally
+        # Skip middleware for schema/docs/admin (HTML error pages)
+        if (
+            request.path.startswith('/admin/')
+            or request.path in ['/schema/', '/docs/', '/redoc/']
+        ):
+            return None
 
         # Log full traceback to console/logs for debugging
         self.logger.exception("Unhandled exception for path %s", request.path, exc_info=exception)
