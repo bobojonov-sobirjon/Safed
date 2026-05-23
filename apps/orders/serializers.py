@@ -657,7 +657,7 @@ class OrderListSerializer(serializers.ModelSerializer):
 
 class MyOrderListSerializer(OrderListSerializer):
     """
-    Mijoz buyurtmalari — cash QR faqat shu yerda (owner + pending cash).
+    Mijoz buyurtmalari — delivery QR (cash: to‘lov kutilmoqda; card: Click to‘langan).
     """
 
     cash_qr_code = serializers.SerializerMethodField()
@@ -666,25 +666,23 @@ class MyOrderListSerializer(OrderListSerializer):
     class Meta(OrderListSerializer.Meta):
         fields = OrderListSerializer.Meta.fields + ['cash_qr_code', 'cash_qr_image_url']
 
-    def _cash_qr_visible(self, obj) -> bool:
+    def _delivery_qr_visible(self, obj) -> bool:
         request = self.context.get('request')
         if not request or not request.user.is_authenticated:
             return False
         if obj.user_id != request.user.pk:
             return False
-        if obj.payment_type != PaymentType.CASH.value:
-            return False
-        if obj.payment_status != PaymentStatus.PENDING.value:
-            return False
-        return bool(obj.cash_qr_token)
+        from apps.orders.services.cash_delivery import delivery_qr_visible_for_customer
+
+        return delivery_qr_visible_for_customer(obj)
 
     def get_cash_qr_code(self, obj) -> Optional[str]:
-        if not self._cash_qr_visible(obj):
+        if not self._delivery_qr_visible(obj):
             return None
         return obj.cash_qr_token
 
     def get_cash_qr_image_url(self, obj) -> Optional[str]:
-        if not self._cash_qr_visible(obj):
+        if not self._delivery_qr_visible(obj):
             return None
         from apps.orders.services.cash_delivery import ensure_cash_qr_image
 

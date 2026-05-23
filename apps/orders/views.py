@@ -86,12 +86,8 @@ def user_is_operator_or_super_admin(user):
 
 
 def finished_order_products_q():
-    """Revenue / stats: cash completed yoki card delivered+paid."""
-    return Q(order__status=OrderStatus.COMPLETED.value) | Q(
-        order__status=OrderStatus.DELIVERED.value,
-        order__payment_type=PaymentType.CARD.value,
-        order__payment_status=PaymentStatus.PAID.value,
-    )
+    """Revenue / stats: faqat QR tasdiqlangan completed."""
+    return Q(order__status=OrderStatus.COMPLETED.value)
 
 
 def ensure_admin_or_super_admin(request):
@@ -225,9 +221,10 @@ class OrderCreateView(APIView):
             snapshot_order_checkout_total(order)
             order.save()
 
+            from .services.cash_delivery import assign_delivery_qr_token
+
+            assign_delivery_qr_token(order)
             if order.payment_type == PaymentType.CASH.value:
-                from .services.cash_delivery import assign_cash_qr_token
-                assign_cash_qr_token(order)
                 from apps.realtime.services.order_notifications import on_order_created_cash
 
                 on_order_created_cash(order.pk)
@@ -375,15 +372,6 @@ class OrderStatusChangeView(APIView):
                 compute_order_settlement(order)
 
         order.save()
-
-        if (
-            previous_status != OrderStatus.DELIVERED.value
-            and new_status == OrderStatus.DELIVERED.value
-            and order.payment_type != PaymentType.CASH.value
-        ):
-            from .services.cash_delivery import deduct_order_stock
-
-            deduct_order_stock(order)
 
         from apps.realtime.services.order_notifications import on_status_changed
 

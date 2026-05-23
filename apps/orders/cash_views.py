@@ -30,11 +30,13 @@ from apps.orders.views import user_is_courier
 @extend_schema(
     tags=[TAG_MY_ORDERS],
     parameters=ORDER_PATH_PARAMS,
-    summary='Cash QR rasm (PNG)',
+    summary='Delivery QR rasm (PNG)',
     description="""
 Faqat **buyurtma egasi**. `cash_qr_code` tokenini QR PNG qilib qaytaradi.
 
-`GET /orders/my/` dagi **`cash_qr_image_url`** shu endpointga ishlatiladi.
+- **cash:** to‘lov kutilmoqda (`pending`)
+- **card:** Click to‘langan, yetkazish oldidan (`confirmed`…`delivered`)
+
 Kuryer skaner qilganda ichidagi matn = `cash_qr_code`.
 """,
     responses={200: {'content': {'image/png': {}}}},
@@ -44,11 +46,10 @@ class CashQrImageView(APIView):
 
     def get(self, request, pk):
         order = get_object_or_404(Order, pk=pk, user=request.user, is_deleted=False)
-        if order.payment_type != PaymentType.CASH.value:
-            return Response({'detail': 'Faqat cash buyurtma'}, status=status.HTTP_400_BAD_REQUEST)
-        if order.payment_status != PaymentStatus.PENDING.value:
-            return Response({'detail': 'QR faqat to‘lov kutilayotganda'}, status=status.HTTP_400_BAD_REQUEST)
-        from apps.orders.services.cash_delivery import ensure_cash_qr_image
+        from apps.orders.services.cash_delivery import delivery_qr_visible_for_customer, ensure_cash_qr_image
+
+        if not delivery_qr_visible_for_customer(order):
+            return Response({'detail': 'QR hozir mavjud emas'}, status=status.HTTP_400_BAD_REQUEST)
 
         if not order.cash_qr_token:
             return Response({'detail': 'QR mavjud emas'}, status=status.HTTP_404_NOT_FOUND)
@@ -106,23 +107,24 @@ class CustomerDeliveryResponseView(APIView):
 
 @extend_schema(
     tags=[TAG_COURIER],
-    summary='Cash: QR tasdiqlash (courier)',
+    summary='Delivery: QR tasdiqlash (courier)',
     description="""
-Faqat **Courier** va faqat o‘ziga biriktirilgan buyurtma.
+Faqat **Courier** va faqat o‘ziga biriktirilgan buyurtma. **cash** va **card**.
 
 ### Body
 - **`order_id`** — buyurtma ID
 - **`qr_code`** — mijoz telefonidagi QR (`GET /orders/my/` → `cash_qr_code`)
 
-### Natija (muvaffaqiyat)
-- `payment_status` → **paid**
-- `status` → **completed**
-- QR **bitta marta** — keyin invalidate
-- Mijozga WebSocket: `courier_confirmed_cash_payment`
+### cash
+- `payment_status=pending`, **`status=delivered`** → to‘lov + `completed`
 
-### Shartlar
-- `payment_type=cash`, `payment_status=pending`, **`status=delivered`** (avval kuryer PATCH delivered)
-- `completed` faqat shu API orqali — `PATCH /status/` da `completed` **ishlamaydi**
+### card (oldindan to‘langan)
+- `payment_status=paid`, **`status=delivered`**
+- Agar yig‘ishdan keyin summa oshgan bo‘lsa — avval mijoz **qo‘shimcha Click** to‘laydi (`extra_payment_due`), keyin QR
+- Summa teng bo‘lsa — avvalgi to‘lov yetarli
+
+### Natija
+- `status` → **completed**, stock kamayadi, WS: `courier_confirmed_cash_payment`
 """,
     request=CashDeliveryConfirmSerializer,
     responses={200: OrderListSerializer},

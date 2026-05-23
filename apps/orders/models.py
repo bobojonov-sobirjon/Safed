@@ -329,14 +329,8 @@ class Order(models.Model):
     
     @property
     def is_completed(self) -> bool:
-        """Cash: completed (QR). Card: delivered after payment."""
-        if self.status == OrderStatus.COMPLETED.value:
-            return True
-        return (
-            self.status == OrderStatus.DELIVERED.value
-            and self.payment_type == PaymentType.CARD.value
-            and self.payment_status == PaymentStatus.PAID.value
-        )
+        """Cash va card: faqat QR tasdiqlangandan keyin completed."""
+        return self.status == OrderStatus.COMPLETED.value
     
     def calculate_total(self) -> Decimal:
         """Calculate total amount from order products."""

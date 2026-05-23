@@ -115,13 +115,34 @@ def _parse_amount(raw: Any) -> Optional[Decimal]:
         return None
 
 
-def _order_payable(order: Order) -> Tuple[bool, str]:
+def _order_payable_checkout(order: Order) -> Tuple[bool, str]:
     if order.payment_type != PaymentType.CARD.value:
         return False, 'Order is not card payment'
     if order.payment_status == PaymentStatus.PAID.value:
         return False, 'Order already paid'
     if order.status not in (OrderStatus.CREATED.value,):
         return False, 'Order is not awaiting payment'
+    if order.is_deleted:
+        return False, 'Order not found'
+    return True, ''
+
+
+def _order_payable_extra(order: Order) -> Tuple[bool, str]:
+    from apps.orders.services.cash_delivery import extra_payment_due
+
+    if order.payment_type != PaymentType.CARD.value:
+        return False, 'Order is not card payment'
+    if order.payment_status != PaymentStatus.PAID.value:
+        return False, 'Initial payment required'
+    if order.status in (
+        OrderStatus.COMPLETED.value,
+        OrderStatus.CANCELLED.value,
+        OrderStatus.REJECTED.value,
+        OrderStatus.CREATED.value,
+    ):
+        return False, 'Order is not ready for extra payment'
+    if extra_payment_due(order) <= 0:
+        return False, 'No extra payment due'
     if order.is_deleted:
         return False, 'Order not found'
     return True, ''
@@ -210,7 +231,38 @@ def handle_click_prepare(params: Mapping[str, Any]) -> Dict[str, Any]:
             error_note='User does not exist',
         )
 
-    if order.payment_status == PaymentStatus.PAID.value:
+    from apps.orders.services.cash_delivery import extra_payment_due
+
+    checkout_expected = order.estimated_total.quantize(Decimal('0.01'))
+    extra_expected = (
+        extra_payment_due(order).quantize(Decimal('0.01'))
+        if order.payment_status == PaymentStatus.PAID.value
+        else Decimal('0.00')
+    )
+
+    if amount == checkout_expected and order.payment_status != PaymentStatus.PAID.value:
+        ok, reason = _order_payable_checkout(order)
+        if not ok:
+            return _click_response(
+                click_trans_id=click_trans_id,
+                merchant_trans_id=merchant_trans_id,
+                error=CLICK_ERR_NOT_FOUND,
+                error_note=reason,
+            )
+        expected = checkout_expected
+        payment_kind = 'checkout'
+    elif extra_expected > 0 and amount == extra_expected:
+        ok, reason = _order_payable_extra(order)
+        if not ok:
+            return _click_response(
+                click_trans_id=click_trans_id,
+                merchant_trans_id=merchant_trans_id,
+                error=CLICK_ERR_NOT_FOUND,
+                error_note=reason,
+            )
+        expected = extra_expected
+        payment_kind = 'extra'
+    elif order.payment_status == PaymentStatus.PAID.value and extra_expected <= 0:
         return _click_response(
             click_trans_id=click_trans_id,
             merchant_trans_id=merchant_trans_id,
@@ -218,18 +270,7 @@ def handle_click_prepare(params: Mapping[str, Any]) -> Dict[str, Any]:
             error=CLICK_ERR_ALREADY_PAID,
             error_note='Already paid',
         )
-
-    ok, reason = _order_payable(order)
-    if not ok:
-        return _click_response(
-            click_trans_id=click_trans_id,
-            merchant_trans_id=merchant_trans_id,
-            error=CLICK_ERR_NOT_FOUND,
-            error_note=reason,
-        )
-
-    expected = order.estimated_total.quantize(Decimal('0.01'))
-    if amount != expected:
+    else:
         return _click_response(
             click_trans_id=click_trans_id,
             merchant_trans_id=merchant_trans_id,
@@ -268,6 +309,8 @@ def handle_click_prepare(params: Mapping[str, Any]) -> Dict[str, Any]:
             state=ClickPayment.State.PREPARED,
             prepared_at=timezone.now(),
         )
+        payment.last_error_note = payment_kind
+        payment.save(update_fields=['last_error_note', 'updated_at'])
 
     logger.info('CLICK prepare ok order=%s payment=%s trans=%s', order_id, payment.pk, click_trans_id)
     return _click_response(
@@ -280,23 +323,52 @@ def handle_click_prepare(params: Mapping[str, Any]) -> Dict[str, Any]:
 
 
 def _confirm_order_paid(order: Order, payment: ClickPayment, *, click_trans_id: Any) -> None:
-    from apps.orders.pricing import mark_order_paid_amount, snapshot_order_checkout_total
+    from apps.orders.pricing import (
+        compute_order_settlement,
+        mark_order_paid_amount,
+        snapshot_order_checkout_total,
+    )
+    from apps.orders.services.cash_delivery import assign_delivery_qr_token
 
-    order.payment_status = PaymentStatus.PAID.value
-    order.status = OrderStatus.CONFIRMED.value
-    snapshot_order_checkout_total(order)
-    mark_order_paid_amount(order)
-    order.save(update_fields=[
-        'payment_status', 'status', 'original_estimated_total', 'paid_amount', 'updated_at',
-    ])
+    kind = (payment.last_error_note or 'checkout').strip() or 'checkout'
+
+    if kind == 'extra':
+        compute_order_settlement(order)
+        baseline = Decimal(str(order.paid_amount or 0)).quantize(Decimal('0.01'))
+        order.paid_amount = (baseline + payment.amount).quantize(Decimal('0.01'))
+        order.adjustment_balance = Decimal('0.00')
+        order.refund_amount = Decimal('0.00')
+        order.save(
+            update_fields=[
+                'paid_amount',
+                'adjustment_balance',
+                'refund_amount',
+                'updated_at',
+            ],
+        )
+    else:
+        order.payment_status = PaymentStatus.PAID.value
+        order.status = OrderStatus.CONFIRMED.value
+        snapshot_order_checkout_total(order)
+        mark_order_paid_amount(order)
+        order.save(
+            update_fields=[
+                'payment_status',
+                'status',
+                'original_estimated_total',
+                'paid_amount',
+                'updated_at',
+            ],
+        )
+        assign_delivery_qr_token(order)
+        from apps.realtime.services.order_notifications import on_order_click_paid
+
+        on_order_click_paid(order.pk)
+
     payment.state = ClickPayment.State.COMPLETED
     payment.completed_at = timezone.now()
     payment.click_trans_id = int(click_trans_id)
     payment.save(update_fields=['state', 'completed_at', 'click_trans_id', 'updated_at'])
-
-    from apps.realtime.services.order_notifications import on_order_click_paid
-
-    on_order_click_paid(order.pk)
 
 
 def handle_click_complete(params: Mapping[str, Any]) -> Dict[str, Any]:
@@ -398,7 +470,8 @@ def handle_click_complete(params: Mapping[str, Any]) -> Dict[str, Any]:
     with transaction.atomic():
         payment = ClickPayment.objects.select_for_update().get(pk=payment.pk)
         order = Order.objects.select_for_update().get(pk=payment.order_id)
-        if order.payment_status == PaymentStatus.PAID.value:
+        payment_kind = (payment.last_error_note or 'checkout').strip() or 'checkout'
+        if order.payment_status == PaymentStatus.PAID.value and payment_kind != 'extra':
             payment.state = ClickPayment.State.COMPLETED
             payment.completed_at = timezone.now()
             payment.save(update_fields=['state', 'completed_at', 'updated_at'])

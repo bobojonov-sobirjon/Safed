@@ -38,11 +38,13 @@ def _click_post_params(request) -> dict:
     description="""
 ### Path: **`id`** — buyurtma ID (`POST /orders/` javobidagi `"id"`)
 
-Только для заказа с **`payment_type`: `card`**, статус **`created`**, оплата **`pending`**.
+**`payment_type`: `card`**
 
-Возвращает **`payment_url`** — откройте в браузере / WebView. После успешной оплаты CLICK вызовет Prepare/Complete на бэкенде, заказ станет **`confirmed`**, **`payment_status`: `paid`**.
+1. **Birinchi to‘lov (checkout):** `status=created`, `payment_status=pending` — Click → `confirmed` + `paid` + **delivery QR** yaratiladi.
 
-Опционально **`return_url`** — куда вернуть пользователя после оплаты.
+2. **Qo‘shimcha to‘lov (extra):** yig‘ishdan keyin `extra_payment_due` > 0 bo‘lsa — shu summa uchun yana Click. To‘langach kuryer QR skaner qiladi.
+
+Возвращает **`payment_url`**. Опционально **`return_url`**.
 """,
     parameters=ORDER_PATH_PARAMS,
     request=OrderClickPaymentSerializer,
@@ -66,15 +68,26 @@ class OrderClickPaymentView(APIView):
                 {'detail': 'Оплата CLICK только для payment_type=card'},
                 status=status.HTTP_400_BAD_REQUEST,
             )
-        if order.payment_status == PaymentStatus.PAID.value:
-            return Response({'detail': 'Заказ уже оплачен'}, status=status.HTTP_400_BAD_REQUEST)
-        if order.status != OrderStatus.CREATED.value:
-            return Response(
-                {'detail': 'Заказ не ожидает оплату'},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
 
-        amount = order.estimated_total.quantize(Decimal('0.01'))
+        from apps.orders.services.cash_delivery import extra_payment_due
+
+        if order.payment_status == PaymentStatus.PAID.value:
+            amount = extra_payment_due(order)
+            if amount <= 0:
+                return Response(
+                    {'detail': 'Qo‘shimcha to‘lov talab qilinmaydi', 'code': 'no_extra_due'},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            payment_kind = 'extra'
+        else:
+            if order.status != OrderStatus.CREATED.value:
+                return Response(
+                    {'detail': 'Заказ не ожидает оплату'},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            amount = order.estimated_total.quantize(Decimal('0.01'))
+            payment_kind = 'checkout'
+
         if amount <= 0:
             return Response({'detail': 'Сумма заказа должна быть больше 0'}, status=status.HTTP_400_BAD_REQUEST)
 
@@ -93,8 +106,9 @@ class OrderClickPaymentView(APIView):
             'amount': str(amount),
             'merchant_trans_id': str(order.pk),
             'payment_url': payment_url,
+            'payment_kind': payment_kind,
         }
-        return Response(OrderClickPaymentResponseSerializer(payload).data)
+        return Response(payload)
 
 
 @extend_schema(
