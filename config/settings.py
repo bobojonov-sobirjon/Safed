@@ -246,10 +246,11 @@ REST_FRAMEWORK = {
         'rest_framework.throttling.UserRateThrottle',
     ],
     'DEFAULT_THROTTLE_RATES': {
-        'anon': '100/hour',
-        'user': '1000/hour',
-        'login': '5/minute',
-        'otp': '3/minute',
+        # Test / frontend ulanish uchun yumshoqroq (prod: .env bilan qisqartirish mumkin)
+        'anon': os.getenv('THROTTLE_ANON', '1000/minute'),
+        'user': os.getenv('THROTTLE_USER', '5000/minute'),
+        'login': os.getenv('THROTTLE_LOGIN', '30/minute'),
+        'otp': os.getenv('THROTTLE_OTP', '15/minute'),
     },
     'PAGE_SIZE': 20,
     'DEFAULT_PAGINATION_CLASS': 'rest_framework.pagination.LimitOffsetPagination',
@@ -437,9 +438,9 @@ CELERY_TASK_TIME_LIMIT = 30 * 60
 # RATE LIMITING
 # =============================================================================
 
-RATE_LIMIT_ENABLE = True
-RATE_LIMIT_REQUESTS = 100  # requests per window
-RATE_LIMIT_WINDOW = 60  # seconds
+RATE_LIMIT_ENABLE = os.getenv('RATE_LIMIT_ENABLE', 'True').lower() in ('true', '1', 'yes')
+RATE_LIMIT_REQUESTS = int(os.getenv('RATE_LIMIT_REQUESTS', '2000'))  # per IP per window
+RATE_LIMIT_WINDOW = int(os.getenv('RATE_LIMIT_WINDOW', '60'))  # seconds
 
 # =============================================================================
 # LOGGING

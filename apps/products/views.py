@@ -375,6 +375,9 @@ def _product_write_kwargs(validated: dict) -> dict:
 - **`q`** — поиск по названию, описанию, штрихкоду, `unique_id`.
 - **`category`** — ID категории; включаются все вложенные подкатегории.
 - **`is_active`** — фильтр активности.
+- **`is_discount`** — `true` — только товары со скидкой (`is_discount=true`).
+
+В ответе: `price`, `price_discount`, `discount_percentage`, `is_discount`, `current_price` (итоговая цена для покупателя).
 
 Публичный доступ (без JWT) для GET.
 """,
@@ -382,6 +385,11 @@ def _product_write_kwargs(validated: dict) -> dict:
             OpenApiParameter(name='q', type=OpenApiTypes.STR, description='Поиск по названию/описанию/штрихкоду/unique_id'),
             OpenApiParameter(name='category', type=OpenApiTypes.INT, description='ID категории (с подкатегориями)'),
             OpenApiParameter(name='is_active', type=OpenApiTypes.BOOL, description='true / false'),
+            OpenApiParameter(
+                name='is_discount',
+                type=OpenApiTypes.BOOL,
+                description='true — только товары со скидкой (chegirma bo‘limi uchun)',
+            ),
             OpenApiParameter(name='limit', type=OpenApiTypes.INT, description='Размер страницы'),
             OpenApiParameter(name='offset', type=OpenApiTypes.INT, description='Смещение'),
         ],
@@ -447,6 +455,10 @@ class ProductListCreateView(APIView):
         is_active = request.query_params.get('is_active')
         if is_active is not None:
             qs = qs.filter(is_active=str(is_active).lower() in ('true', '1', 'yes'))
+        is_discount = request.query_params.get('is_discount')
+        if is_discount is not None:
+            qs = qs.filter(is_discount=str(is_discount).lower() in ('true', '1', 'yes'))
+            qs = qs.order_by('-discount_percentage', '-created_at')
 
         paginator = LimitOffsetPagination()
         page = paginator.paginate_queryset(qs, request)

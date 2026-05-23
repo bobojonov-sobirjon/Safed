@@ -242,16 +242,23 @@ class ProductListSerializer(serializers.ModelSerializer):
     size_label = serializers.SerializerMethodField(
         help_text='Ko‘rinish uchun hajm (product_unit + unit_amount).',
     )
+    current_price = serializers.SerializerMethodField(
+        help_text='Joriy narx: chegirma bo‘lsa price_discount, aks holda price.',
+    )
 
     class Meta:
         model = Products
         fields = [
-            'id', 'translations', 'badge', 'unit', 'shelf_location', 'quantity', 'price',
-            'price_discount', 'discount_percentage', 'is_discount', 'is_active',
-            'sale_unit', 'product_unit', 'unit_amount', 'size_label',
+            'id', 'unique_id', 'translations', 'badge', 'unit', 'shelf_location', 'quantity',
+            'price', 'price_discount', 'discount_percentage', 'is_discount', 'current_price',
+            'is_active', 'sale_unit', 'product_unit', 'unit_amount', 'size_label',
             'category', 'barcodes', 'images', 'is_favourite', 'created_at', 'updated_at',
         ]
         extra_kwargs = {
+            'price': {'help_text': 'Asosiy narx (UZS).'},
+            'price_discount': {'help_text': 'Chegirmadagi narx (UZS). `is_discount=true` bo‘lganda ishlatiladi.'},
+            'discount_percentage': {'help_text': 'Chegirma foizi (0–100).'},
+            'is_discount': {'help_text': 'Chegirma faolmi.'},
             'product_unit': {
                 'help_text': 'Narx birligi: piece, kg, gram, liter, ml.',
             },
@@ -262,6 +269,12 @@ class ProductListSerializer(serializers.ModelSerializer):
                 'help_text': 'Ichki (piece/weight). Avtomatik.',
             },
         }
+
+    def get_current_price(self, obj) -> str:
+        value = obj.current_price
+        if value is None:
+            return '0.00'
+        return str(Decimal(str(value)).quantize(Decimal('0.01')))
 
     def _display_lang(self) -> str:
         request = self.context.get('request')
