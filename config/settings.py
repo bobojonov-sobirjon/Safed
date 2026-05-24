@@ -530,14 +530,22 @@ CLICK_PAY_URL = os.getenv('CLICK_PAY_URL', 'https://my.click.uz/services/pay')
 CLICK_RETURN_URL = os.getenv('CLICK_RETURN_URL', '')
 
 # =============================================================================
-# Firebase (FCM) — service account from .env
+# Firebase (FCM) — service account from .env yoki JSON fayl
 # =============================================================================
 
+def _normalize_firebase_private_key(raw: str) -> str:
+    key = (raw or '').strip()
+    if len(key) >= 2 and key[0] == key[-1] and key[0] in ('"', "'"):
+        key = key[1:-1]
+    return key.replace('\\n', '\n')
+
+
+FIREBASE_CREDENTIALS_FILE = os.getenv('FIREBASE_CREDENTIALS_FILE', '')
 FIREBASE_PROJECT_ID = os.getenv('FIREBASE_PROJECT_ID', '')
 FIREBASE_PRIVATE_KEY_ID = os.getenv('FIREBASE_PRIVATE_KEY_ID', '')
 FIREBASE_CLIENT_EMAIL = os.getenv('FIREBASE_CLIENT_EMAIL', '')
 FIREBASE_CLIENT_ID = os.getenv('FIREBASE_CLIENT_ID', '')
-FIREBASE_PRIVATE_KEY = (os.getenv('FIREBASE_PRIVATE_KEY', '') or '').replace('\\n', '\n')
+FIREBASE_PRIVATE_KEY = _normalize_firebase_private_key(os.getenv('FIREBASE_PRIVATE_KEY', ''))
 FIREBASE_AUTH_URI = os.getenv('FIREBASE_AUTH_URI', 'https://accounts.google.com/o/oauth2/auth')
 FIREBASE_TOKEN_URI = os.getenv('FIREBASE_TOKEN_URI', 'https://oauth2.googleapis.com/token')
 FIREBASE_AUTH_PROVIDER_CERT_URL = os.getenv(

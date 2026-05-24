@@ -1,7 +1,8 @@
-"""Firebase Cloud Messaging (FCM) via service account from settings."""
+"""Firebase FCM credential loading and send helpers."""
 from __future__ import annotations
 
 import logging
+import os
 from typing import Any, Dict, Iterable, List, Optional
 
 from django.conf import settings
@@ -9,30 +10,57 @@ from django.conf import settings
 logger = logging.getLogger(__name__)
 
 _app_initialized = False
+_auth_failed = False
 
 
-def _ensure_firebase_app() -> bool:
-    global _app_initialized
-    if _app_initialized:
-        return True
+def firebase_credentials_status() -> Dict[str, Any]:
+    """Diagnostika: production .env / JSON fayl to‘g‘rimi."""
+    cred_file = (getattr(settings, 'FIREBASE_CREDENTIALS_FILE', '') or '').strip()
+    project_id = getattr(settings, 'FIREBASE_PROJECT_ID', '') or ''
+    client_email = getattr(settings, 'FIREBASE_CLIENT_EMAIL', '') or ''
+    private_key = getattr(settings, 'FIREBASE_PRIVATE_KEY', '') or ''
+    issues: List[str] = []
+
+    if cred_file:
+        if not os.path.isfile(cred_file):
+            issues.append(f'FIREBASE_CREDENTIALS_FILE topilmadi: {cred_file}')
+    else:
+        if not project_id:
+            issues.append('FIREBASE_PROJECT_ID bo‘sh')
+        if not client_email:
+            issues.append('FIREBASE_CLIENT_EMAIL bo‘sh')
+        if not private_key:
+            issues.append('FIREBASE_PRIVATE_KEY bo‘sh')
+        elif 'BEGIN PRIVATE KEY' not in private_key:
+            issues.append(
+                "FIREBASE_PRIVATE_KEY noto'g'ri format (\\n yoki qo'shtirnoq muammosi). "
+                'JSON fayl ishlatish tavsiya: FIREBASE_CREDENTIALS_FILE=/path/serviceAccount.json'
+            )
+
+    return {
+        'credentials_file': cred_file or None,
+        'project_id': project_id or None,
+        'client_email': client_email or None,
+        'private_key_ok': bool(private_key and 'BEGIN PRIVATE KEY' in private_key),
+        'issues': issues,
+    }
+
+
+def _load_firebase_certificate():
+    import firebase_admin
+    from firebase_admin import credentials
+
+    cred_file = (getattr(settings, 'FIREBASE_CREDENTIALS_FILE', '') or '').strip()
+    if cred_file:
+        if not os.path.isfile(cred_file):
+            raise FileNotFoundError(f'FIREBASE_CREDENTIALS_FILE not found: {cred_file}')
+        return credentials.Certificate(cred_file)
 
     project_id = getattr(settings, 'FIREBASE_PROJECT_ID', '') or ''
     client_email = getattr(settings, 'FIREBASE_CLIENT_EMAIL', '') or ''
     private_key = getattr(settings, 'FIREBASE_PRIVATE_KEY', '') or ''
     if not (project_id and client_email and private_key):
-        logger.debug('Firebase credentials not configured; skip FCM')
-        return False
-
-    try:
-        import firebase_admin
-        from firebase_admin import credentials
-    except ImportError:
-        logger.warning('firebase-admin not installed; skip FCM')
-        return False
-
-    if firebase_admin._apps:
-        _app_initialized = True
-        return True
+        raise ValueError('Firebase credentials incomplete in .env')
 
     cred_dict = {
         'type': 'service_account',
@@ -54,8 +82,33 @@ def _ensure_firebase_app() -> bool:
         ),
         'client_x509_cert_url': getattr(settings, 'FIREBASE_CLIENT_CERT_URL', '') or '',
     }
+    return credentials.Certificate(cred_dict)
+
+
+def _ensure_firebase_app() -> bool:
+    global _app_initialized, _auth_failed
+    if _auth_failed:
+        return False
+    if _app_initialized:
+        return True
+
+    status = firebase_credentials_status()
+    if status['issues']:
+        logger.error('Firebase config issues: %s', '; '.join(status['issues']))
+        return False
+
     try:
-        cred = credentials.Certificate(cred_dict)
+        import firebase_admin
+    except ImportError:
+        logger.warning('firebase-admin not installed; skip FCM')
+        return False
+
+    if firebase_admin._apps:
+        _app_initialized = True
+        return True
+
+    try:
+        cred = _load_firebase_certificate()
         firebase_admin.initialize_app(cred)
         _app_initialized = True
         return True
@@ -79,6 +132,11 @@ def _is_obviously_invalid_token(token: str) -> bool:
     return value.lower() in {'string', 'test', 'token', 'fcm_token', 'device_token'}
 
 
+def _is_auth_error(exc: BaseException) -> bool:
+    name = type(exc).__name__
+    return name in {'ThirdPartyAuthError', 'UnauthenticatedError'}
+
+
 def send_fcm_to_tokens(
     tokens: Iterable[str],
     *,
@@ -98,6 +156,8 @@ def send_fcm_to_tokens(
 
     payload_data = {str(k): str(v) for k, v in (data or {}).items()}
     success = 0
+    global _auth_failed
+
     for token in token_list:
         if _is_obviously_invalid_token(token):
             logger.warning('FCM: skip invalid placeholder token=%s…', token[:12])
@@ -117,6 +177,17 @@ def send_fcm_to_tokens(
         except firebase_exceptions.InvalidArgumentError:
             logger.warning('FCM: invalid registration token=%s…', token[:12])
             _deactivate_device_token(token)
-        except Exception:
+        except Exception as exc:
+            if _is_auth_error(exc):
+                _auth_failed = True
+                logger.error(
+                    'FCM 401: Firebase service account not authorized. '
+                    'Production .env da FIREBASE_PRIVATE_KEY yoki FIREBASE_CREDENTIALS_FILE '
+                    'ni tekshiring. Firebase Console → Service accounts → yangi JSON yuklab oling. '
+                    'Google Cloud da "Firebase Cloud Messaging API" yoqilgan bo‘lishi kerak. '
+                    'Mobil ilova project_id=%s bilan bir xil bo‘lishi kerak.',
+                    getattr(settings, 'FIREBASE_PROJECT_ID', ''),
+                )
+                break
             logger.exception('FCM send failed token=%s…', token[:12])
     return success
