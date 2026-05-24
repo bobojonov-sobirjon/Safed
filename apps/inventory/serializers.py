@@ -143,3 +143,18 @@ class BarcodeLookupSerializer(serializers.Serializer):
         error_messages=_REQUIRED,
     )
 
+
+class ProductRestockSerializer(serializers.Serializer):
+    barcode = serializers.CharField(
+        required=True,
+        max_length=255,
+        help_text='Штрихкод товара для пополнения склада.',
+        error_messages=_REQUIRED,
+    )
+    quantity = serializers.IntegerField(
+        required=True,
+        min_value=1,
+        help_text='Сколько единиц добавить к текущему остатку (`Products.quantity`).',
+        error_messages=_REQUIRED,
+    )
+

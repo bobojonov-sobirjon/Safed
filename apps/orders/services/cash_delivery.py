@@ -7,13 +7,11 @@ from decimal import Decimal, ROUND_CEILING
 from typing import Any, Dict, Tuple
 
 from django.db import transaction
-from django.db.models import F
 from django.utils import timezone
 
 from apps.core.enums import OrderStatus, PaymentStatus, PaymentType
 from apps.orders.models import Order, OrderCourier, OrderProduct
 from apps.orders.pricing import compute_order_settlement, mark_order_paid_amount
-from apps.products.models import Products
 from apps.products.unit_pricing import stock_units_required
 
 from .delivery_events import (
@@ -102,6 +100,8 @@ def ensure_cash_qr_image(order: Order) -> None:
 
 
 def deduct_order_stock(order: Order) -> None:
+    from apps.inventory.services.stock import adjust_product_stock
+
     products_qs = OrderProduct.objects.select_related('product').filter(order=order)
     for op in products_qs:
         if not op.product:
@@ -109,7 +109,9 @@ def deduct_order_stock(order: Order) -> None:
         norm = op.normalized_quantity if op.normalized_quantity is not None else op.quantity
         needed = stock_units_required(op.product, norm)
         dec = int(needed.to_integral_value(rounding=ROUND_CEILING))
-        Products.objects.filter(id=op.product_id).update(quantity=F('quantity') - dec)
+        if dec <= 0:
+            continue
+        adjust_product_stock(op.product_id, -dec)
 
 
 def _finalize_delivery_qr_confirm(order: Order, *, courier_user) -> Dict[str, Any]:

@@ -18,6 +18,7 @@ from apps.orders.serializers import (
 )
 from apps.orders.services.picking import PickingError, apply_picking_by_barcode, apply_picking_quantity
 from apps.orders.openapi_params import ORDER_LINE_PATH_PARAMS, ORDER_PATH_PARAMS
+from apps.orders.openapi_descriptions import PICKING_LINE_DESCRIPTION, PICKING_SCAN_DESCRIPTION
 from apps.orders.openapi_tags import TAG_PICKING
 from apps.orders.views import user_is_staff
 
@@ -33,20 +34,23 @@ def _picking_response(request, order: Order, line_summary: dict) -> Response:
 @extend_schema(
     tags=[TAG_PICKING],
     summary='Yig‘ish: haqiqiy vazn/miqdor (qator bo‘yicha)',
-    description="""
+    description=PICKING_LINE_DESCRIPTION + """
 ### Path parametrlar
 | Parametr | Nima |
 |----------|------|
-| **`id`** | **Buyurtma ID** — `POST /orders/` yoki `GET /orders/my/` → `"id": 4` |
-| **`line_id`** | **Buyurtma qatori ID** — `GET /orders/{id}/` → `order_products[].id` (masalan `2`). **Bu `product_id` emas!** |
+| **`id`** | **Buyurtma ID** — `POST /orders/` yoki `GET /orders/active/` → `"id"` |
+| **`line_id`** | **Buyurtma qatori ID** — `GET /orders/{id}/` → `order_products[].id`. **Bu `product_id` emas!** |
 
 ### Body
-- **`quantity`** — haqiqiy kg yoki dona (masalan `2.200`)
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `quantity` | decimal | **yes** | Haqiqiy miqdor: `2` dona, `1.250` kg, `500` gram |
+| `product_unit` | string | no | `piece`, `kg`, `gram`, `liter`, `ml`. Default — checkout birligi |
 
-### Natija
-Butun buyurtma qayta hisoblanadi; javobda `settlement` (qo‘shimcha to‘lov / qaytarish). **card** va **cash**.
+### Javob `200`
+`order`, `line` (yangilangan qator), `settlement` (qo‘shimcha to‘lov / qaytarish).
 
-**Staff**, status: `confirmed` yoki `picking`.
+**Staff** (Operator/Admin). Status: **`confirmed`** yoki **`picking`**.
 """,
     parameters=ORDER_LINE_PATH_PARAMS,
     request=OrderPickingLineSerializer,
@@ -97,17 +101,23 @@ class OrderPickingLineUpdateView(APIView):
 @extend_schema(
     tags=[TAG_PICKING],
     summary='Yig‘ish: shtrixkod (line_id kerak emas)',
-    description="""
+    description=PICKING_SCAN_DESCRIPTION + """
 ### Path
 - **`id`** — **buyurtma ID** (`Order.id`)
 
 ### Body
-- **`barcode`** — mahsulot shtrixkodi
-- **`quantity`** — miqdor (masalan `2` dona yoki `500` gram)
-- **`product_unit`** (ixtiyoriy) — `piece`, `gram`, `kg`. Default: checkout birligi (`piece`).
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `barcode` | string | **yes** | Mahsulot shtrixkodi (`ProductBarcode.barcode`) |
+| `quantity` | decimal | no | Yangi miqdor. Berilmasa — joriy `quantity` saqlanadi |
+| `product_unit` | string | no | `piece`, `gram`, `kg`, … Default — checkout birligi |
 
-**Muhim:** `quantity: 2` dona bo‘lsa, `product_unit` bermasangiz ham odatda `piece` qabul qilinadi.
-Tarozi uchun: `{"quantity": "500", "product_unit": "gram"}`.
+**Muhim:** `quantity: 2` dona → odatda `piece`. Tarozi: `{"quantity": "500", "product_unit": "gram"}`.
+
+### Javob `200`
+`order`, `line`, `settlement` — PATCH picking-lines bilan bir xil.
+
+**Staff**. Status: **`confirmed`** yoki **`picking`**.
 """,
     parameters=ORDER_PATH_PARAMS,
     request=OrderPickingScanSerializer,

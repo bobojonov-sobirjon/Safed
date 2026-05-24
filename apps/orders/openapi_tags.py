@@ -20,7 +20,10 @@ ORDER_OPENAPI_TAGS = [
     {'name': TAG_CREATE_ORDER, 'description': 'Buyurtma yaratish: `payment_type` card/cash, manzil, slot, mahsulotlar.'},
     {'name': TAG_PAYMENT, 'description': 'To‘lov: CLICK `click-payment` (mijoz), `prepare`/`complete` (CLICK server callback).'},
     {'name': TAG_MY_ORDERS, 'description': 'Mijoz: mening buyurtmalarim, bekor qilish.'},
-    {'name': TAG_PICKING, 'description': 'Yig‘ish (staff): haqiqiy vazn/qty, skaner. Settlement: extra_payment / refund / none (card va cash).'},
+    {'name': TAG_PICKING, 'description': (
+        'Yig‘ish (Operator/Admin): buyurtma `confirmed` → `picking` dan keyin haqiqiy vazn/miqdor. '
+        'PATCH picking-lines (line_id) yoki POST picking/scan (barcode). Settlement: extra_payment / refund / none.'
+    )},
     {'name': TAG_ADMIN_OPERATIONS, 'description': 'Admin: status o‘zgartirish, kuryer, barcha/aktiv buyurtmalar.'},
     {'name': TAG_COURIER, 'description': 'Kuryer: o‘z buyurtmalari.'},
     {'name': TAG_ORDER_DETAIL, 'description': 'Bitta buyurtma: ko‘rish, tahrirlash (created), o‘chirish.'},

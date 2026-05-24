@@ -117,3 +117,53 @@ PRICING_PREVIEW_DESCRIPTION = """
 
 Ответ: `products_subtotal`, `delivery_fee`, `estimated_total`, `min_order_met`, `can_checkout`, …
 """
+
+PICKING_FLOW_DESCRIPTION = """
+## Buyurtma oqimi (yig‘ish qayerda?)
+
+```
+1. Mijoz: POST /orders/                    → status: created
+2. (Card) Click to‘lov                     → confirmed + paid
+   (Cash)  Operator tasdiqlaydi            → PATCH /status/ → confirmed
+3. Operator: PATCH /orders/{id}/status/    → picking   ← YIG‘ISH BOSHLANDI
+4. Operator: picking API (shu bo‘lim)      → haqiqiy vazn/miqdor, skaner
+5. Operator: PATCH /status/                → shipped (+ kuryer biriktirish)
+6. Kuryer: delivered → QR confirm → completed
+```
+
+**Yig‘ish API faqat status `confirmed` yoki `picking` bo‘lganda ishlaydi.**
+
+Avval `GET /orders/{id}/` yoki `GET /orders/active/` — qatorlar, `order_products[].id` (line_id), `product.shelf_location`.
+
+---
+
+## Ikki endpoint — farqi
+
+| | **PATCH picking-lines/{line_id}/** | **POST picking/scan/** |
+|---|-----------------------------------|------------------------|
+| Qatorni topish | Qo‘lda `line_id` (`order_products[].id`) | Shtrixkod — qator avtomatik |
+| Asosiy body | `quantity` (+ `product_unit`) | `barcode` + `quantity` |
+| UI | Ro‘yxatdan tanlash | Skaner / tarozi |
+
+Ikkalasi ham: qator yangilanadi, buyurtma qayta hisoblanadi, javobda **`settlement`** (`extra_payment` / `refund` / `none`).
+
+Mijozga push/WS: `order_picking_line` yoki `order_picking_scan`.
+"""
+
+PICKING_LINE_DESCRIPTION = PICKING_FLOW_DESCRIPTION + """
+
+---
+
+## Ushbu endpoint: qator bo‘yicha (line_id)
+
+Operator ro‘yxatdan qatorni tanlaydi va haqiqiy miqdor/vazn kiritadi. Shtrixkod kerak emas.
+"""
+
+PICKING_SCAN_DESCRIPTION = PICKING_FLOW_DESCRIPTION + """
+
+---
+
+## Ushbu endpoint: shtrixkod bilan
+
+Operator mahsulotni skaner qiladi — backend buyurtmadagi mos qatorni topadi. **`line_id` URL da kerak emas.**
+"""

@@ -38,7 +38,7 @@ from .serializers import (
 )
 from apps.accounts.models import CustomUser
 from apps.core.enums import OrderStatus, UserGroup, PaymentStatus, PaymentType, ProductUnit
-from apps.products.unit_pricing import catalog_unit_for_product, stock_units_required
+from apps.orders.services.stock_validation import collect_insufficient_stock, insufficient_stock_response
 from .pricing import compute_order_pricing, build_pricing_preview, snapshot_order_checkout_total
 from .openapi_params import (
     ORDER_PATH_PARAMS,
@@ -126,34 +126,9 @@ class OrderCreateView(APIView):
             user = CustomUser.objects.select_for_update().get(pk=request.user.pk)
             ids = [item['product_id'] for item in v['products_data']]
             products = {p.id: p for p in Products.objects.select_for_update().filter(id__in=ids)}
-            insufficient = []
-            for item in v['products_data']:
-                p = products.get(item['product_id'])
-                if not p:
-                    continue
-                needed = stock_units_required(p, item['normalized_quantity'])
-                cat = catalog_unit_for_product(p)
-                if cat == ProductUnit.PIECE.value:
-                    if p.quantity < int(needed):
-                        insufficient.append({
-                            'product_id': p.id,
-                            'available_quantity': p.quantity,
-                            'requested_quantity': str(needed),
-                        })
-                elif Decimal(p.quantity) < needed:
-                    insufficient.append({
-                        'product_id': p.id,
-                        'available_quantity': str(p.quantity),
-                        'requested_quantity': str(needed),
-                    })
+            insufficient = collect_insufficient_stock(products, v['products_data'])
             if insufficient:
-                return Response(
-                    {
-                        'detail': 'Недостаточно товара на складе',
-                        'products': insufficient,
-                    },
-                    status=status.HTTP_400_BAD_REQUEST,
-                )
+                return insufficient_stock_response(insufficient)
 
             preview = build_pricing_preview(
                 products_data=v['products_data'],
@@ -612,34 +587,9 @@ class OrderDetailView(APIView):
             if 'products_data' in v:
                 ids = [item['product_id'] for item in v['products_data']]
                 products = {p.id: p for p in Products.objects.select_for_update().filter(id__in=ids)}
-                insufficient = []
-                for item in v['products_data']:
-                    p = products.get(item['product_id'])
-                    if not p:
-                        continue
-                    needed = stock_units_required(p, item['normalized_quantity'])
-                    cat = catalog_unit_for_product(p)
-                    if cat == ProductUnit.PIECE.value:
-                        if p.quantity < int(needed):
-                            insufficient.append({
-                                'product_id': p.id,
-                                'available_quantity': p.quantity,
-                                'requested_quantity': str(needed),
-                            })
-                    elif Decimal(p.quantity) < needed:
-                        insufficient.append({
-                            'product_id': p.id,
-                            'available_quantity': str(p.quantity),
-                            'requested_quantity': str(needed),
-                        })
+                insufficient = collect_insufficient_stock(products, v['products_data'])
                 if insufficient:
-                    return Response(
-                        {
-                            'detail': 'Недостаточно товара на складе',
-                            'products': insufficient,
-                        },
-                        status=status.HTTP_400_BAD_REQUEST,
-                    )
+                    return insufficient_stock_response(insufficient)
 
             if 'lat' in v:
                 order.lat = v['lat']

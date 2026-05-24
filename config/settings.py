@@ -434,6 +434,33 @@ CELERY_TIMEZONE = TIME_ZONE
 CELERY_TASK_TRACK_STARTED = True
 CELERY_TASK_TIME_LIMIT = 30 * 60
 
+# Kunlik savat eslatmasi push (FCM, o‘zbekcha) — har kuni 10:00 Toshkent
+DAILY_CART_REMINDER_ENABLED = os.getenv('DAILY_CART_REMINDER_ENABLED', 'True').lower() in (
+    'true',
+    '1',
+    'yes',
+)
+DAILY_CART_REMINDER_HOUR = int(os.getenv('DAILY_CART_REMINDER_HOUR', '10'))
+DAILY_CART_REMINDER_MINUTE = int(os.getenv('DAILY_CART_REMINDER_MINUTE', '0'))
+
+from celery.schedules import crontab  # noqa: E402
+
+CELERY_BEAT_SCHEDULE = {}
+if DAILY_CART_REMINDER_ENABLED:
+    CELERY_BEAT_SCHEDULE['daily-cart-reminder-push'] = {
+        'task': 'apps.realtime.tasks.send_daily_cart_reminder_push',
+        'schedule': crontab(
+            hour=DAILY_CART_REMINDER_HOUR,
+            minute=DAILY_CART_REMINDER_MINUTE,
+        ),
+    }
+
+# =============================================================================
+# INVENTORY
+# =============================================================================
+
+LOW_STOCK_THRESHOLD = int(os.getenv('LOW_STOCK_THRESHOLD', '5'))
+
 # =============================================================================
 # RATE LIMITING
 # =============================================================================

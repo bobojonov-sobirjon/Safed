@@ -20,5 +20,10 @@ urlpatterns = [
 
     # Barcode lookup
     path('inventory/products/by-barcode/', views.ProductByBarcodeView.as_view(), name='inventory-product-by-barcode'),
+    path(
+        'inventory/products/restock/',
+        views.ProductRestockByBarcodeView.as_view(),
+        name='inventory-product-restock',
+    ),
 ]
 

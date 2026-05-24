@@ -15,6 +15,7 @@ from drf_spectacular.utils import extend_schema, OpenApiParameter
 from drf_spectacular.types import OpenApiTypes
 
 from apps.core.enums import UserGroup
+from apps.orders.views import user_is_operator_or_super_admin
 from apps.products.models import Products, ProductBarcode
 from apps.products.serializers import ProductListSerializer
 
@@ -27,7 +28,9 @@ from .serializers import (
     ReceiptItemSerializer,
     ReceiptItemCreateUpdateSerializer,
     BarcodeLookupSerializer,
+    ProductRestockSerializer,
 )
+from .services.stock import StockError, restock_product_by_barcode
 
 
 def user_is_admin(user) -> bool:
@@ -44,6 +47,18 @@ class IsInventoryAdmin(BasePermission):
         if not user or not user.is_authenticated:
             return False
         return user_is_admin(user)
+
+
+class IsOperatorOrSuperAdmin(BasePermission):
+    """Operator yoki Super Admin — sklad to‘ldirish va skaner."""
+
+    message = 'Доступ запрещён'
+
+    def has_permission(self, request, view):
+        user = getattr(request, 'user', None)
+        if not user or not user.is_authenticated:
+            return False
+        return user_is_operator_or_super_admin(user)
 
 
 class AdminOnlyMixin:
@@ -472,4 +487,40 @@ class ProductByBarcodeView(AdminOnlyMixin, APIView):
         if not pb or not pb.product:
             return Response({'detail': 'Товар не найден'}, status=status.HTTP_404_NOT_FOUND)
         return Response({'product': ProductListSerializer(pb.product, context={'request': request}).data})
+
+
+@extend_schema(
+    tags=['Инвентаризация / Штрихкоды'],
+    summary='Пополнить остаток по штрихкоду',
+    description='''Быстрое пополнение склада по штрихкоду (сканер).
+
+**Тело запроса:**
+- `barcode` — штрихкод товара
+- `quantity` — сколько добавить к текущему `Products.quantity`
+
+**Пример:** было `10`, передали `quantity: 50` → станет `60`.
+
+Доступ: **Operator** и **Super Admin**.''',
+    request=ProductRestockSerializer,
+)
+class ProductRestockByBarcodeView(APIView):
+    permission_classes = [IsOperatorOrSuperAdmin]
+
+    def post(self, request):
+        serializer = ProductRestockSerializer(data=request.data)
+        if not serializer.is_valid():
+            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+        v = serializer.validated_data
+        try:
+            product = restock_product_by_barcode(v['barcode'], v['quantity'])
+        except StockError as exc:
+            status_code = status.HTTP_404_NOT_FOUND if exc.code == 'not_found' else status.HTTP_400_BAD_REQUEST
+            return Response({'detail': exc.message}, status=status_code)
+        return Response(
+            {
+                'product': ProductListSerializer(product, context={'request': request}).data,
+                'added_quantity': v['quantity'],
+            },
+            status=status.HTTP_200_OK,
+        )
 

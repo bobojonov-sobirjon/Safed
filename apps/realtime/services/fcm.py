@@ -64,6 +64,21 @@ def _ensure_firebase_app() -> bool:
         return False
 
 
+def _deactivate_device_token(token: str) -> None:
+    from apps.accounts.models import UserDevice
+
+    count = UserDevice.objects.filter(device_token=token, is_active=True).update(is_active=False)
+    if count:
+        logger.info('FCM: deactivated invalid device token=%s…', token[:12])
+
+
+def _is_obviously_invalid_token(token: str) -> bool:
+    value = (token or '').strip()
+    if len(value) < 20:
+        return True
+    return value.lower() in {'string', 'test', 'token', 'fcm_token', 'device_token'}
+
+
 def send_fcm_to_tokens(
     tokens: Iterable[str],
     *,
@@ -78,11 +93,16 @@ def send_fcm_to_tokens(
     if not _ensure_firebase_app():
         return 0
 
+    from firebase_admin import exceptions as firebase_exceptions
     from firebase_admin import messaging
 
     payload_data = {str(k): str(v) for k, v in (data or {}).items()}
     success = 0
     for token in token_list:
+        if _is_obviously_invalid_token(token):
+            logger.warning('FCM: skip invalid placeholder token=%s…', token[:12])
+            _deactivate_device_token(token)
+            continue
         try:
             message = messaging.Message(
                 notification=messaging.Notification(title=title, body=body),
@@ -91,6 +111,12 @@ def send_fcm_to_tokens(
             )
             messaging.send(message)
             success += 1
+        except firebase_exceptions.NotFoundError:
+            logger.warning('FCM: unregistered token=%s…', token[:12])
+            _deactivate_device_token(token)
+        except firebase_exceptions.InvalidArgumentError:
+            logger.warning('FCM: invalid registration token=%s…', token[:12])
+            _deactivate_device_token(token)
         except Exception:
             logger.exception('FCM send failed token=%s…', token[:12])
     return success
