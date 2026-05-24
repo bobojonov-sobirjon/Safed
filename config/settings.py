@@ -552,4 +552,7 @@ FIREBASE_AUTH_PROVIDER_CERT_URL = os.getenv(
     'FIREBASE_AUTH_PROVIDER_CERT_URL',
     'https://www.googleapis.com/oauth2/v1/certs',
 )
-FIREBASE_CLIENT_CERT_URL = os.getenv('FIREBASE_CLIENT_CERT_URL', '')
+FIREBASE_CLIENT_CERT_URL = (
+    os.getenv('FIREBASE_CLIENT_CERT_URL', '')
+    or os.getenv('FIREBASE_CLIENT_X509_CERT_URL', '')
+)

@@ -49,13 +49,17 @@ class Command(BaseCommand):
             self.stdout.write(self.style.ERROR(f"  Xato: {api.get('error')} — {api.get('detail')}"))
             if api.get('fix'):
                 self.stdout.write(self.style.WARNING(f"  Tuzatish: {api.get('fix')}"))
-            self._print_json_fix()
+            self.stdout.write('')
+            self.stdout.write(
+                'Eslatma: .env dagi FIREBASE_* yetarli — alohida JSON fayl shart emas.'
+            )
+            self._print_api_fix()
+
+    def _print_api_fix(self):
+        self.stdout.write('  → Google Cloud → safed-operator → APIs → Firebase Cloud Messaging API → Enable')
+        self.stdout.write('  → Firebase Console → Service accounts → kalit bekor qilingan bo‘lmasin')
 
     def _print_json_fix(self):
         self.stdout.write('')
-        self.stdout.write('Tavsiya (production):')
-        self.stdout.write('  1. Firebase Console → Project Settings → Service accounts')
-        self.stdout.write('  2. "Generate new private key" → JSON fayl')
-        self.stdout.write('  3. Serverga: /var/www/Safed/secrets/firebase-safed-operator.json')
-        self.stdout.write('  4. .env: FIREBASE_CREDENTIALS_FILE=/var/www/Safed/secrets/firebase-safed-operator.json')
-        self.stdout.write('  5. Google Cloud → APIs → "Firebase Cloud Messaging API" → Enable')
+        self.stdout.write('Agar .env da PRIVATE_KEY muammo bo‘lsa (ixtiyoriy alternativa):')
+        self.stdout.write('  FIREBASE_CREDENTIALS_FILE=/var/www/Safed/secrets/firebase.json')
