@@ -117,6 +117,58 @@ def _ensure_firebase_app() -> bool:
         return False
 
 
+def verify_fcm_api_access() -> Dict[str, Any]:
+    """
+    Init yetarli emas — FCM HTTP API ga haqiqiy so‘rov (dry_run).
+    401 bu yerda: kalit yoki Cloud Messaging API muammosi.
+    InvalidArgument (yomon test token) = auth OK.
+    """
+    if not _ensure_firebase_app():
+        return {
+            'ok': False,
+            'stage': 'init',
+            'detail': 'Firebase Admin SDK init muvaffaqiyatsiz',
+        }
+
+    from firebase_admin import messaging
+
+    dummy_token = 'dryrun' + ('x' * 140)
+    try:
+        message = messaging.Message(
+            notification=messaging.Notification(title='FCM test', body='FCM test'),
+            token=dummy_token,
+        )
+        messaging.send(message, dry_run=True)
+        return {'ok': True, 'stage': 'fcm_api', 'detail': 'FCM API auth muvaffaqiyatli (dry_run)'}
+    except Exception as exc:
+        if _is_auth_error(exc):
+            return {
+                'ok': False,
+                'stage': 'fcm_api',
+                'error': 'auth_401',
+                'detail': str(exc),
+                'fix': (
+                    'Google Cloud Console → safed-operator → APIs → '
+                    '"Firebase Cloud Messaging API" yoqing. '
+                    'Yangi service account JSON: FIREBASE_CREDENTIALS_FILE=...'
+                ),
+            }
+        exc_name = type(exc).__name__
+        msg = str(exc).lower()
+        if exc_name == 'InvalidArgumentError' or 'registration token' in msg:
+            return {
+                'ok': True,
+                'stage': 'fcm_api',
+                'detail': 'FCM API auth OK (test token rad etildi — bu normal)',
+            }
+        return {
+            'ok': False,
+            'stage': 'fcm_api',
+            'error': exc_name,
+            'detail': str(exc),
+        }
+
+
 def _deactivate_device_token(token: str) -> None:
     from apps.accounts.models import UserDevice
 
