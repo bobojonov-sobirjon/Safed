@@ -122,23 +122,42 @@ def _load_firebase_certificate():
     return credentials.Certificate(build_firebase_cred_dict())
 
 
+def _fcm_authed_session():
+    """AuthorizedSession — Bearer avtomatik; proxy (HTTP_PROXY) o‘chirilgan."""
+    from google.auth.transport.requests import AuthorizedSession
+    from google.oauth2 import service_account
+
+    creds = service_account.Credentials.from_service_account_info(
+        build_firebase_cred_dict(),
+        scopes=[FCM_MESSAGING_SCOPE],
+    )
+    session = AuthorizedSession(creds)
+    session.trust_env = False
+    return session
+
+
 def verify_firebase_oauth() -> Dict[str, Any]:
     """
     Haqiqiy OAuth token (.env private key to‘g‘rimi).
     dry_run o‘tib, send 401 bersa — avval shuni tekshiring.
     """
     try:
-        from google.auth.transport.requests import Request
-        from google.oauth2 import service_account
+        session = _fcm_authed_session()
+        token = getattr(session.credentials, 'token', None) or ''
+        if not token:
+            from google.auth.transport.requests import Request
 
-        creds = service_account.Credentials.from_service_account_info(
-            build_firebase_cred_dict(),
-            scopes=[FCM_MESSAGING_SCOPE],
-        )
-        creds.refresh(Request())
+            session.credentials.refresh(Request())
+            token = session.credentials.token or ''
+        if not token:
+            return {
+                'ok': False,
+                'error': 'empty_token',
+                'detail': 'OAuth refresh bo‘ldi, lekin access token bo‘sh',
+            }
         return {
             'ok': True,
-            'detail': 'OAuth token olindi — .env service account ishlayapti',
+            'detail': f'OAuth token olindi (len={len(token)}) — .env service account OK',
         }
     except Exception as exc:
         return {
@@ -187,18 +206,6 @@ def _ensure_firebase_app() -> bool:
         return False
 
 
-def _get_fcm_access_token() -> str:
-    from google.auth.transport.requests import Request
-    from google.oauth2 import service_account
-
-    creds = service_account.Credentials.from_service_account_info(
-        build_firebase_cred_dict(),
-        scopes=[FCM_MESSAGING_SCOPE],
-    )
-    creds.refresh(Request())
-    return creds.token
-
-
 def send_fcm_http_v1(
     token: str,
     *,
@@ -206,26 +213,22 @@ def send_fcm_http_v1(
     body: str,
     data: Optional[Dict[str, str]] = None,
     validate_only: bool = False,
+    session=None,
 ) -> tuple[int, Dict[str, Any]]:
     """FCM HTTP v1 — aniq HTTP status va JSON xato."""
-    import requests
-
+    device_token = (token or '').strip()
     project_id = getattr(settings, 'FIREBASE_PROJECT_ID', '') or ''
     url = f'https://fcm.googleapis.com/v1/projects/{project_id}/messages:send'
     message: Dict[str, Any] = {
-        'token': token,
+        'token': device_token,
         'notification': {'title': title, 'body': body},
     }
     if data:
         message['data'] = {str(k): str(v) for k, v in data.items()}
 
-    access_token = _get_fcm_access_token()
-    response = requests.post(
+    http = session or _fcm_authed_session()
+    response = http.post(
         url,
-        headers={
-            'Authorization': f'Bearer {access_token}',
-            'Content-Type': 'application/json',
-        },
         json={'validate_only': validate_only, 'message': message},
         timeout=30,
     )
@@ -234,6 +237,39 @@ def send_fcm_http_v1(
     except ValueError:
         payload = {'raw': response.text[:500]}
     return response.status_code, payload
+
+
+def probe_fcm_real_device_token(user_id: int) -> Dict[str, Any]:
+    """DB dagi haqiqiy token bilan yuborish (probe fake tokendan farqli)."""
+    from apps.accounts.models import UserDevice
+
+    row = (
+        UserDevice.objects.filter(user_id=user_id, is_active=True)
+        .exclude(device_token='')
+        .order_by('-updated_at')
+        .values_list('device_token', flat=True)
+        .first()
+    )
+    if not row:
+        return {'ok': False, 'detail': f'user_id={user_id}: faol token yo‘q'}
+
+    session = _fcm_authed_session()
+    status, payload = send_fcm_http_v1(
+        row,
+        title='Safed test',
+        body='Real device token probe',
+        data={'type': 'test_push'},
+        session=session,
+    )
+    err = payload.get('error') or {}
+    return {
+        'ok': status == 200,
+        'http_status': status,
+        'user_id': user_id,
+        'token_prefix': row[:16],
+        'detail': err.get('message') or str(payload),
+        'response': payload,
+    }
 
 
 def probe_fcm_http_api() -> Dict[str, Any]:
@@ -246,12 +282,14 @@ def probe_fcm_http_api() -> Dict[str, Any]:
         return {**oauth, 'stage': 'oauth'}
 
     probe_token = 'e' * 22 + ':APA91b' + ('A' * 140)
+    session = _fcm_authed_session()
     try:
         status, payload = send_fcm_http_v1(
             probe_token,
             title='FCM probe',
             body='FCM probe',
             validate_only=False,
+            session=session,
         )
     except Exception as exc:
         return {'ok': False, 'stage': 'fcm_http', 'error': type(exc).__name__, 'detail': str(exc)}
@@ -346,9 +384,16 @@ def send_fcm_to_tokens(
     success = 0
     global _auth_failed
 
+    try:
+        session = _fcm_authed_session()
+    except Exception as exc:
+        logger.exception('FCM session init failed: %s', exc)
+        return 0
+
     for token in token_list:
         if _auth_failed:
             break
+        token = (token or '').strip()
         if _is_obviously_invalid_token(token):
             logger.warning('FCM: skip invalid placeholder token=%s…', token[:12])
             _deactivate_device_token(token)
@@ -359,6 +404,7 @@ def send_fcm_to_tokens(
                 title=title,
                 body=body,
                 data=payload_data,
+                session=session,
             )
         except Exception as exc:
             logger.exception('FCM HTTP transport failed token=%s…: %s', token[:12], exc)
@@ -385,9 +431,13 @@ def send_fcm_to_tokens(
 
         if status == 401 or err_status == 'UNAUTHENTICATED':
             _auth_failed = True
+            cred_token = getattr(session.credentials, 'token', None) or ''
             logger.error(
-                'FCM auth (HTTP 401): %s — .env FIREBASE_PRIVATE_KEY tekshiring.',
+                'FCM auth (HTTP 401): %s — oauth_token_len=%s. '
+                'HTTP_PROXY bo‘lsa: NO_PROXY=fcm.googleapis.com. '
+                'Token boshqa Firebase project bo‘lishi mumkin.',
                 msg,
+                len(cred_token),
             )
             break
 

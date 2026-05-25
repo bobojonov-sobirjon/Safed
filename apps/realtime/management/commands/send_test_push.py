@@ -4,6 +4,7 @@ from django.core.management.base import BaseCommand
 
 from apps.accounts.models import UserDevice
 from apps.realtime.services.fcm import (
+    probe_fcm_real_device_token,
     reset_fcm_auth_state,
     send_fcm_to_tokens,
     verify_firebase_oauth,
@@ -59,10 +60,12 @@ class Command(BaseCommand):
         self.stdout.write(
             self.style.SUCCESS(f'tokens={len(tokens)} sent={sent}'),
         )
-        if sent == 0:
+        if sent == 0 and options.get('user_id'):
+            real = probe_fcm_real_device_token(options['user_id'])
+            self.stdout.write(self.style.ERROR(f"HTTP {real.get('http_status')}: {real.get('detail')}"))
             self.stdout.write(
                 self.style.WARNING(
-                    'Yuborilmadi: logda FCM 401 yoki token boshqa Firebase project dan. '
-                    'Mobil google-services.json project_id = safed-operator bo‘lishi kerak.',
+                    'Tekshiring: google-services.json → project_id=safed-operator; '
+                    'HTTP_PROXY bo‘lsa export NO_PROXY=fcm.googleapis.com',
                 ),
             )

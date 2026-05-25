@@ -4,13 +4,21 @@ from django.core.management.base import BaseCommand
 from apps.realtime.services.fcm import (
     firebase_credentials_status,
     probe_fcm_http_api,
+    probe_fcm_real_device_token,
     reset_fcm_auth_state,
     verify_firebase_oauth,
 )
 
 
 class Command(BaseCommand):
-    help = 'Firebase FCM (.env) — kalit uzunligi, OAuth, dry_run.'
+    help = 'Firebase FCM (.env) — kalit uzunligi, OAuth, HTTP probe.'
+
+    def add_arguments(self, parser):
+        parser.add_argument(
+            '--user-id',
+            type=int,
+            help='DB dagi haqiqiy FCM token bilan test yuborish',
+        )
 
     def handle(self, *args, **options):
         reset_fcm_auth_state()
@@ -52,7 +60,19 @@ class Command(BaseCommand):
         if api.get('ok'):
             self.stdout.write(self.style.SUCCESS(f"  {api.get('detail')}"))
             self.stdout.write('')
-            self.stdout.write('Keyingi: python manage.py send_test_push --user-id 5')
+            uid = options.get('user_id')
+            if uid:
+                self.stdout.write('')
+                self.stdout.write(f'Haqiqiy token (user_id={uid}):')
+                real = probe_fcm_real_device_token(uid)
+                if real.get('ok'):
+                    self.stdout.write(self.style.SUCCESS(f"  HTTP 200 — push yuborildi ({real.get('token_prefix')}…)"))
+                else:
+                    self.stdout.write(self.style.ERROR(
+                        f"  HTTP {real.get('http_status')}: {real.get('detail')}",
+                    ))
+            else:
+                self.stdout.write('Keyingi: python manage.py check_fcm_config --user-id 5')
         else:
             self.stdout.write(self.style.ERROR(f"  {api.get('error')}: {api.get('detail')}"))
             if api.get('fix'):
