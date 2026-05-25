@@ -111,11 +111,30 @@ def _order_amount_str(order) -> str:
 
 
 def _operator_user_ids() -> list[int]:
-    """Faol Operator guruhi — yangi buyurtma push."""
+    """Faqat Operator guruhi."""
     return list(
         User.objects.filter(
             is_active=True,
             groups__name=UserGroup.OPERATOR.value,
+        )
+        .distinct()
+        .values_list('id', flat=True),
+    )
+
+
+def _new_order_push_recipient_ids() -> list[int]:
+    """
+    Yangi buyurtma FCM/WS: Operator + Super Admin + Admin.
+    Kuryer va oddiy User kirmaydi.
+    """
+    return list(
+        User.objects.filter(
+            is_active=True,
+            groups__name__in=[
+                UserGroup.OPERATOR.value,
+                UserGroup.SUPER_ADMIN.value,
+                UserGroup.ADMIN.value,
+            ],
         )
         .distinct()
         .values_list('id', flat=True),
@@ -192,21 +211,28 @@ def notify_operators_new_order(order_id: int, *, card_payment_confirmed: bool = 
     else:
         body = STAFF_NEW_ORDER_BODY_CARD_PENDING.format(order_id=order.pk, amount=amount)
 
-    operator_ids = _operator_user_ids()
-    if not operator_ids:
-        logger.warning('No active operators for new order=%s', order.pk)
+    recipient_ids = _new_order_push_recipient_ids()
+    if not recipient_ids:
+        logger.warning(
+            'New order=%s: no push recipients (Operator/Admin/Super Admin yo‘q yoki is_active=false)',
+            order.pk,
+        )
         return
 
     data = _order_payload(order.pk, event='staff_new_order', payment_type=order.payment_type)
     notify_users(
-        operator_ids,
+        recipient_ids,
         title=STAFF_NEW_ORDER_TITLE,
         body=body,
         notif_type='staff_new_order',
         data=data,
         send_push=True,
     )
-    logger.info('Operators notified new order=%s count=%s', order.pk, len(operator_ids))
+    logger.info(
+        'Staff push new order=%s recipients=%s (Operator/Admin/Super Admin)',
+        order.pk,
+        len(recipient_ids),
+    )
 
 
 def notify_staff_new_order(order_id: int) -> None:
@@ -267,7 +293,19 @@ def notify_customer_status_change(order_id: int, new_status: str) -> None:
 
 
 def notify_courier_assigned(order_id: int, courier_id: int) -> None:
-    """Kuryerga push + WS; mijozga alohida xabar."""
+    """Faqat biriktirilgan kuryerga push + WS (POST add-courier dan keyin)."""
+    from apps.accounts.models import UserDevice
+
+    has_token = UserDevice.objects.filter(user_id=courier_id, is_active=True).exclude(
+        device_token='',
+    ).exists()
+    if not has_token:
+        logger.warning(
+            'Courier user_id=%s has no active FCM device — push skipped for order=%s',
+            courier_id,
+            order_id,
+        )
+
     notify_user(
         courier_id,
         title=COURIER_NEW_ORDER_TITLE,

@@ -31,6 +31,7 @@ from .serializers import (
     UserDevicePatchSerializer,
 )
 from .services.eskiz import send_sms
+from .services.user_lifecycle import delete_or_deactivate_user
 
 
 GROUP_USER = 'User'
@@ -531,7 +532,18 @@ class UserUpdateView(APIView):
         return Response(UserListSerializer(user).data)
 
 
-@extend_schema(tags=['Персонал'], summary='Удалить пользователя')
+@extend_schema(
+    tags=['Персонал'],
+    summary='Удалить пользователя',
+    description="""
+Удаление пользователя (только **Super Admin**).
+
+- Если есть **заказы**, назначения курьером или приходы на склад — пользователь **деактивируется** (`is_active=false`), а не удаляется из БД (**200**).
+- Если связей нет — полное удаление (**204**).
+
+Нельзя удалить свой аккаунт.
+""",
+)
 class UserDeleteView(APIView):
     permission_classes = [IsAuthenticated]
 
@@ -539,12 +551,21 @@ class UserDeleteView(APIView):
         if not is_super_admin(request.user):
             return Response({'detail': 'Доступ запрещён'}, status=status.HTTP_403_FORBIDDEN)
 
+        if request.user.pk == pk:
+            return Response(
+                {'detail': 'Нельзя удалить свой аккаунт'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
         try:
             user = CustomUser.objects.get(pk=pk)
         except CustomUser.DoesNotExist:
             return Response({'detail': 'Не найден'}, status=status.HTTP_404_NOT_FOUND)
-        user.delete()
-        return Response(status=status.HTTP_204_NO_CONTENT)
+
+        result = delete_or_deactivate_user(user)
+        if result.get('deleted'):
+            return Response(status=status.HTTP_204_NO_CONTENT)
+        return Response(result, status=status.HTTP_200_OK)
 
 
 # ========== PATCH password (admin) ==========
