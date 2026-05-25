@@ -45,11 +45,18 @@ def _push_fcm(user_id: int, *, title: str, body: str, data: Dict[str, Any]) -> N
         ),
     )
     if not tokens:
+        logger.warning('FCM skipped: user_id=%s has no active device tokens', user_id)
         return
     fcm_data = {k: str(v) for k, v in data.items()}
     fcm_data.setdefault('title', title)
     fcm_data.setdefault('body', body)
-    send_fcm_to_tokens(tokens, title=title, body=body, data=fcm_data)
+    sent = send_fcm_to_tokens(tokens, title=title, body=body, data=fcm_data)
+    if sent == 0:
+        logger.error(
+            'FCM failed for user_id=%s (%s token(s)) — check Firebase project/credentials/logs',
+            user_id,
+            len(tokens),
+        )
 
 
 def notify_user(
