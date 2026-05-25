@@ -302,7 +302,7 @@ class Products(TranslatableModel):
     class Meta:
         verbose_name = 'Продукт'
         verbose_name_plural = 'Продукты'
-        ordering = ['-created_at']
+        ordering = ['-id']
         indexes = [
             models.Index(fields=['is_active']),
             models.Index(fields=['shelf_location']),

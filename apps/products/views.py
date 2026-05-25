@@ -28,6 +28,9 @@ from .serializers import (
 from .services import ProductService
 from .services.product_write import create_product_barcode
 from .openapi_product import PRODUCT_CREATE_DESCRIPTION, PRODUCT_UNIT_FORM_FIELDS
+
+# Yangi qo'shilgan mahsulotlar ro'yxatda birinchi (eng katta id).
+PRODUCT_LIST_ORDERING = ('-id',)
 from .product_unit_specs import product_unit_choices_payload, product_unit_openapi_description
 
 
@@ -372,6 +375,8 @@ def _product_write_kwargs(validated: dict) -> dict:
         description="""
 Каталог для приложения с пагинацией **limit/offset**.
 
+Сортировка: **сначала новые** (`id` по убыванию — последний добавленный товар в начале списка).
+
 - **`q`** — поиск по названию, описанию, штрихкоду, `unique_id`.
 - **`category`** — ID категории; включаются все вложенные подкатегории.
 - **`is_active`** — фильтр активности.
@@ -439,15 +444,20 @@ class ProductListCreateView(APIView):
     def get(self, request):
         from apps.categories.models import Category
         
-        qs = Products.objects.all().order_by('-created_at')
+        qs = Products.objects.all().order_by(*PRODUCT_LIST_ORDERING)
         q = (request.query_params.get('q') or '').strip()
         if q:
-            qs = qs.filter(
-                Q(unique_id__icontains=q)
-                | Q(barcodes__barcode__icontains=q)
-                | Q(translations__name__icontains=q)
-                | Q(translations__description__icontains=q)
-            ).distinct()
+            search_ids = (
+                Products.objects.filter(
+                    Q(unique_id__icontains=q)
+                    | Q(barcodes__barcode__icontains=q)
+                    | Q(translations__name__icontains=q)
+                    | Q(translations__description__icontains=q)
+                )
+                .values_list('pk', flat=True)
+                .distinct()
+            )
+            qs = qs.filter(pk__in=search_ids).order_by(*PRODUCT_LIST_ORDERING)
         cat = request.query_params.get('category')
         if cat:
             category_ids = self._get_category_with_descendants(int(cat))
@@ -458,7 +468,7 @@ class ProductListCreateView(APIView):
         is_discount = request.query_params.get('is_discount')
         if is_discount is not None:
             qs = qs.filter(is_discount=str(is_discount).lower() in ('true', '1', 'yes'))
-            qs = qs.order_by('-discount_percentage', '-created_at')
+            qs = qs.order_by('-discount_percentage', *PRODUCT_LIST_ORDERING)
 
         paginator = LimitOffsetPagination()
         page = paginator.paginate_queryset(qs, request)
