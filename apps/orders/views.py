@@ -199,10 +199,9 @@ class OrderCreateView(APIView):
             from .services.cash_delivery import assign_delivery_qr_token
 
             assign_delivery_qr_token(order)
-            if order.payment_type == PaymentType.CASH.value:
-                from apps.realtime.services.order_notifications import on_order_created_cash
+            from apps.realtime.services.order_notifications import on_order_created
 
-                on_order_created_cash(order.pk)
+            on_order_created(order.pk)
 
         return Response(OrderListSerializer(order, context={'request': request}).data, status=status.HTTP_201_CREATED)
 

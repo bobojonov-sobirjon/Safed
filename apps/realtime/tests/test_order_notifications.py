@@ -9,9 +9,9 @@ from apps.core.enums import OrderStatus, PaymentType, UserGroup
 from apps.orders.models import Order
 from apps.realtime.models import Notification
 from apps.realtime.services.order_notifications import (
-    notify_staff_new_order,
+    notify_operators_new_order,
     notify_staff_order_cancelled,
-    on_order_created_cash,
+    on_order_created,
     on_status_changed,
 )
 
@@ -22,6 +22,11 @@ class OrderNotificationTests(TransactionTestCase):
         Group.objects.get_or_create(name=UserGroup.SUPER_ADMIN.value)
         self.operator = CustomUser.objects.create_user(phone='998901010101', password='x')
         self.operator.groups.add(Group.objects.get(name=UserGroup.OPERATOR.value))
+        UserDevice.objects.create(
+            user=self.operator,
+            device_token='operator-fcm-token',
+            device_type='android',
+        )
         self.customer = CustomUser.objects.create_user(phone='998902020202', password='x')
         self.order = Order.objects.create(
             user=self.customer,
@@ -37,12 +42,11 @@ class OrderNotificationTests(TransactionTestCase):
 
     @patch('apps.realtime.services.notify.send_fcm_to_tokens', return_value=1)
     @patch('apps.realtime.services.notify._push_ws')
-    def test_staff_notified_on_cash_create(self, _ws, _fcm):
-        on_order_created_cash(self.order.pk)
-        self.assertEqual(
-            Notification.objects.filter(type='staff_new_order', user=self.operator).count(),
-            1,
-        )
+    def test_operators_notified_on_cash_create(self, _ws, _fcm):
+        on_order_created(self.order.pk)
+        n = Notification.objects.get(user=self.operator, type='staff_new_order')
+        self.assertIn('поступил', n.body.lower())
+        self.assertEqual(_fcm.call_count, 1)
 
     @patch('apps.realtime.services.notify.send_fcm_to_tokens', return_value=1)
     @patch('apps.realtime.services.notify._push_ws')
@@ -75,14 +79,18 @@ class OrderNotificationTests(TransactionTestCase):
         self.assertIn('адрес', n.body.lower())
         self.assertEqual(_fcm.call_count, 1)
 
-    @patch('apps.realtime.services.notify.send_fcm_to_tokens', return_value=0)
+    @patch('apps.realtime.services.notify.send_fcm_to_tokens', return_value=1)
     @patch('apps.realtime.services.notify._push_ws')
-    def test_card_create_does_not_notify_staff_hook(self, _ws, _fcm):
-        """Card buyurtma yaratilganda staff xabari yo‘q — faqat Click to‘lovdan keyin."""
-        Order.objects.create(
+    def test_operators_notified_on_card_create(self, _ws, _fcm):
+        card_order = Order.objects.create(
             user=self.customer,
             status=OrderStatus.CREATED.value,
             payment_type=PaymentType.CARD.value,
             estimated_total=Decimal('10000'),
         )
-        self.assertEqual(Notification.objects.filter(type='staff_new_order').count(), 0)
+        on_order_created(card_order.pk)
+        n = Notification.objects.get(user=self.operator, type='staff_new_order')
+        self.assertIn('ожидается оплата', n.body.lower())
+        notify_operators_new_order(card_order.pk, card_payment_confirmed=True)
+        n2 = Notification.objects.filter(user=self.operator, type='staff_new_order').order_by('-id').first()
+        self.assertIn('подтверждена', n2.body.lower())

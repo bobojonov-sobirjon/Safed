@@ -43,8 +43,15 @@ STATUS_CUSTOMER_BODY: Dict[str, str] = {
 }
 
 STAFF_NEW_ORDER_TITLE = 'Новый заказ'
-STAFF_NEW_ORDER_BODY_CASH = 'Заказ №{order_id} на сумму {amount} сум — оплата наличными при получении.'
-STAFF_NEW_ORDER_BODY_CARD = 'Заказ №{order_id} на сумму {amount} сум — оплата картой подтверждена.'
+STAFF_NEW_ORDER_BODY_CASH = (
+    'Поступил новый заказ №{order_id} на сумму {amount} сум. Оплата наличными при получении.'
+)
+STAFF_NEW_ORDER_BODY_CARD_PENDING = (
+    'Поступил новый заказ №{order_id} на сумму {amount} сум. Ожидается оплата картой.'
+)
+STAFF_NEW_ORDER_BODY_CARD_PAID = (
+    'Заказ №{order_id} на сумму {amount} сум — оплата картой подтверждена.'
+)
 
 CUSTOMER_CLICK_PAID_TITLE = 'Оплата получена'
 CUSTOMER_CLICK_PAID_BODY = (
@@ -103,6 +110,18 @@ def _order_amount_str(order) -> str:
     return f'{total.quantize(Decimal("0.01")):.2f}'
 
 
+def _operator_user_ids() -> list[int]:
+    """Faol Operator guruhi — yangi buyurtma push."""
+    return list(
+        User.objects.filter(
+            is_active=True,
+            groups__name=UserGroup.OPERATOR.value,
+        )
+        .distinct()
+        .values_list('id', flat=True),
+    )
+
+
 def _staff_user_ids() -> list[int]:
     return list(
         User.objects.filter(
@@ -154,7 +173,8 @@ def notify_staff_order_cancelled(order_id: int) -> None:
     logger.info('Staff notified order cancelled=%s', order_id)
 
 
-def notify_staff_new_order(order_id: int) -> None:
+def notify_operators_new_order(order_id: int, *, card_payment_confirmed: bool = False) -> None:
+    """Barcha Operatorlarga: WS + FCM (ruscha), buyurtma yaratilganda yoki karta to‘landi."""
     from apps.orders.models import Order
 
     try:
@@ -164,26 +184,34 @@ def notify_staff_new_order(order_id: int) -> None:
     except Order.DoesNotExist:
         return
 
-    if order.payment_type == PaymentType.CASH.value:
-        body = STAFF_NEW_ORDER_BODY_CASH.format(
-            order_id=order.pk,
-            amount=_order_amount_str(order),
-        )
+    amount = _order_amount_str(order)
+    if card_payment_confirmed:
+        body = STAFF_NEW_ORDER_BODY_CARD_PAID.format(order_id=order.pk, amount=amount)
+    elif order.payment_type == PaymentType.CASH.value:
+        body = STAFF_NEW_ORDER_BODY_CASH.format(order_id=order.pk, amount=amount)
     else:
-        body = STAFF_NEW_ORDER_BODY_CARD.format(
-            order_id=order.pk,
-            amount=_order_amount_str(order),
-        )
+        body = STAFF_NEW_ORDER_BODY_CARD_PENDING.format(order_id=order.pk, amount=amount)
+
+    operator_ids = _operator_user_ids()
+    if not operator_ids:
+        logger.warning('No active operators for new order=%s', order.pk)
+        return
 
     data = _order_payload(order.pk, event='staff_new_order', payment_type=order.payment_type)
     notify_users(
-        _staff_user_ids(),
+        operator_ids,
         title=STAFF_NEW_ORDER_TITLE,
         body=body,
         notif_type='staff_new_order',
         data=data,
+        send_push=True,
     )
-    logger.info('Staff notified new order=%s', order.pk)
+    logger.info('Operators notified new order=%s count=%s', order.pk, len(operator_ids))
+
+
+def notify_staff_new_order(order_id: int) -> None:
+    """Backward-compatible alias."""
+    notify_operators_new_order(order_id)
 
 
 def notify_customer_click_paid(order_id: int) -> None:
@@ -307,13 +335,18 @@ def schedule_after_commit(callback) -> None:
     transaction.on_commit(callback)
 
 
+def on_order_created(order_id: int) -> None:
+    """Har qanday to‘lov turi: buyurtma yaratilganda barcha Operatorlarga push."""
+    schedule_after_commit(lambda: notify_operators_new_order(order_id))
+
+
 def on_order_created_cash(order_id: int) -> None:
-    schedule_after_commit(lambda: notify_staff_new_order(order_id))
+    on_order_created(order_id)
 
 
 def on_order_click_paid(order_id: int) -> None:
     def _run():
-        notify_staff_new_order(order_id)
+        notify_operators_new_order(order_id, card_payment_confirmed=True)
         notify_customer_click_paid(order_id)
 
     schedule_after_commit(_run)
