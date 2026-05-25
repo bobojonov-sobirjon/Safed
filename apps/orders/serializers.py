@@ -22,6 +22,7 @@ from apps.products.models import Products
 from apps.products.serializers import ProductListSerializer
 from apps.accounts.models import CustomUser
 from apps.core.enums import OrderStatus, PaymentStatus, PaymentType, ProductUnit, SaleUnit
+from apps.core.geo import GEO_COORD_DECIMAL_PLACES, GEO_COORD_MAX_DIGITS
 from apps.products.fields import ProductUnitChoiceField
 from apps.products.product_unit_specs import get_product_unit_spec
 from apps.products.unit_pricing import UnitPricingError, compute_line_pricing
@@ -246,11 +247,17 @@ class OrderCreateSerializer(serializers.Serializer):
         help_text='Минимум 1 товар. `total_price` в строках не передавать.',
     )
     lat = serializers.DecimalField(
-        required=False, max_digits=10, decimal_places=7, allow_null=True,
+        required=False,
+        max_digits=GEO_COORD_MAX_DIGITS,
+        decimal_places=GEO_COORD_DECIMAL_PLACES,
+        allow_null=True,
         help_text='Широта. Нужно с `long` и `address`, если нет `delivery_address_id`.',
     )
     long = serializers.DecimalField(
-        required=False, max_digits=10, decimal_places=7, allow_null=True,
+        required=False,
+        max_digits=GEO_COORD_MAX_DIGITS,
+        decimal_places=GEO_COORD_DECIMAL_PLACES,
+        allow_null=True,
         help_text='Долгота. Вместе с `lat` и `address`.',
     )
     address = serializers.CharField(
@@ -333,8 +340,18 @@ class OrderUpdateSerializer(serializers.Serializer):
         required=False,
         min_length=1,
     )
-    lat = serializers.DecimalField(required=False, max_digits=10, decimal_places=7, allow_null=True)
-    long = serializers.DecimalField(required=False, max_digits=10, decimal_places=7, allow_null=True)
+    lat = serializers.DecimalField(
+        required=False,
+        max_digits=GEO_COORD_MAX_DIGITS,
+        decimal_places=GEO_COORD_DECIMAL_PLACES,
+        allow_null=True,
+    )
+    long = serializers.DecimalField(
+        required=False,
+        max_digits=GEO_COORD_MAX_DIGITS,
+        decimal_places=GEO_COORD_DECIMAL_PLACES,
+        allow_null=True,
+    )
     address = serializers.CharField(required=False, allow_blank=True, max_length=1000)
     delivery_address_id = serializers.IntegerField(required=False, allow_null=True)
     entrance = serializers.CharField(required=False, allow_blank=True, allow_null=True, max_length=50)

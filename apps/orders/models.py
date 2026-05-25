@@ -11,6 +11,7 @@ from django.utils import timezone
 from parler.models import TranslatableModel, TranslatedFields
 
 from apps.core.enums import OrderStatus, PaymentStatus, PaymentType
+from apps.core.geo import GEO_COORD_DECIMAL_PLACES, GEO_COORD_MAX_DIGITS
 
 
 class OrderCancelReason(TranslatableModel):
@@ -42,15 +43,15 @@ class Order(models.Model):
         verbose_name='Пользователь',
     )
     lat = models.DecimalField(
-        max_digits=10,
-        decimal_places=7,
+        max_digits=GEO_COORD_MAX_DIGITS,
+        decimal_places=GEO_COORD_DECIMAL_PLACES,
         null=True,
         blank=True,
         verbose_name='Широта',
     )
     long = models.DecimalField(
-        max_digits=10,
-        decimal_places=7,
+        max_digits=GEO_COORD_MAX_DIGITS,
+        decimal_places=GEO_COORD_DECIMAL_PLACES,
         null=True,
         blank=True,
         verbose_name='Долгота',
@@ -562,8 +563,20 @@ class DeliveryAddress(models.Model):
     entrance = models.CharField(max_length=50, blank=True, default='', verbose_name='Подъезд')
     floor = models.CharField(max_length=20, blank=True, default='', verbose_name='Этаж')
     intercom_code = models.CharField(max_length=50, blank=True, default='', verbose_name='Домофон')
-    lat = models.DecimalField(max_digits=10, decimal_places=7, null=True, blank=True, verbose_name='Широта')
-    long = models.DecimalField(max_digits=10, decimal_places=7, null=True, blank=True, verbose_name='Долгота')
+    lat = models.DecimalField(
+        max_digits=GEO_COORD_MAX_DIGITS,
+        decimal_places=GEO_COORD_DECIMAL_PLACES,
+        null=True,
+        blank=True,
+        verbose_name='Широта',
+    )
+    long = models.DecimalField(
+        max_digits=GEO_COORD_MAX_DIGITS,
+        decimal_places=GEO_COORD_DECIMAL_PLACES,
+        null=True,
+        blank=True,
+        verbose_name='Долгота',
+    )
     is_default = models.BooleanField(default=False, db_index=True, verbose_name='По умолчанию')
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
