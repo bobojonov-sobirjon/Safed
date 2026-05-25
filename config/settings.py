@@ -534,10 +534,14 @@ CLICK_RETURN_URL = os.getenv('CLICK_RETURN_URL', '')
 # =============================================================================
 
 def _normalize_firebase_private_key(raw: str) -> str:
+    """`.env` / systemd: bir qatorda `\\n` yoki haqiqiy yangi qator."""
     key = (raw or '').strip()
     if len(key) >= 2 and key[0] == key[-1] and key[0] in ('"', "'"):
         key = key[1:-1]
-    return key.replace('\\n', '\n')
+    key = key.replace('\r\n', '\n').replace('\r', '\n')
+    if '\\n' in key:
+        key = key.replace('\\n', '\n')
+    return key
 
 
 FIREBASE_CREDENTIALS_FILE = os.getenv('FIREBASE_CREDENTIALS_FILE', '')
@@ -556,3 +560,4 @@ FIREBASE_CLIENT_CERT_URL = (
     os.getenv('FIREBASE_CLIENT_CERT_URL', '')
     or os.getenv('FIREBASE_CLIENT_X509_CERT_URL', '')
 )
+FIREBASE_UNIVERSE_DOMAIN = os.getenv('FIREBASE_UNIVERSE_DOMAIN', 'googleapis.com')

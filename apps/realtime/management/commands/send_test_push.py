@@ -3,7 +3,11 @@ from django.contrib.auth import get_user_model
 from django.core.management.base import BaseCommand
 
 from apps.accounts.models import UserDevice
-from apps.realtime.services.fcm import send_fcm_to_tokens, verify_fcm_api_access
+from apps.realtime.services.fcm import (
+    reset_fcm_auth_state,
+    send_fcm_to_tokens,
+    verify_firebase_oauth,
+)
 
 User = get_user_model()
 
@@ -16,9 +20,11 @@ class Command(BaseCommand):
         parser.add_argument('--all', action='store_true', help='Barcha faol tokenlar')
 
     def handle(self, *args, **options):
-        api = verify_fcm_api_access()
-        if not api.get('ok'):
-            self.stdout.write(self.style.ERROR(f"FCM API: {api}"))
+        reset_fcm_auth_state()
+        oauth = verify_firebase_oauth()
+        if not oauth.get('ok'):
+            self.stdout.write(self.style.ERROR(f"OAuth (.env): {oauth}"))
+            self.stdout.write('  python manage.py check_fcm_config')
             return
 
         if options.get('user_id'):
