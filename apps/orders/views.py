@@ -361,7 +361,7 @@ class OrderStatusChangeView(APIView):
     tags=[TAG_MY_ORDERS],
     summary='Мои заказы',
     description="""
-Список заказов **текущего пользователя**, новые сверху.
+Список заказов **текущего пользователя**, новые сверху (`order_by=-id`).
 
 ### Query
 - **`status`** (optional) — фильтр: `created`, `confirmed`, `picking`, `shipped`, `delivered`, `rejected`, `cancelled`.
@@ -376,7 +376,7 @@ class MyOrderListView(APIView):
             Order.objects.filter(user=request.user)
             .select_related('user')
             .prefetch_related('cancel_reasons')
-            .order_by('-created_at')
+            .order_by('-id')
         )
         status_filter = request.query_params.get('status')
         if status_filter:
@@ -390,7 +390,7 @@ class MyOrderListView(APIView):
     tags=[TAG_ADMIN_OPERATIONS],
     summary='Все заказы (персонал)',
     description="""
-Полный список заказов (только **staff**). Сортировка: новые сверху.
+Полный список заказов (только **staff**). Сортировка: `-id` (yangi buyurtmalar tepada).
 
 ### Query
 - **`status`** — фильтр по статусу.
@@ -408,7 +408,7 @@ class OrderListView(APIView):
         if not user_is_staff(request.user):
             return Response({'detail': 'Доступ запрещён'}, status=status.HTTP_403_FORBIDDEN)
 
-        qs = Order.objects.all().order_by('-created_at')
+        qs = Order.objects.all().order_by('-id')
         status_filter = request.query_params.get('status')
         if status_filter:
             qs = qs.filter(status=status_filter)
@@ -445,7 +445,7 @@ class CourierMyOrdersView(APIView):
         if not user_is_courier(request.user):
             return Response({'detail': 'Доступ запрещён'}, status=status.HTTP_403_FORBIDDEN)
 
-        qs = Order.objects.filter(order_couriers__courier=request.user).order_by('-created_at').distinct()
+        qs = Order.objects.filter(order_couriers__courier=request.user).order_by('-id').distinct()
         status_filter = request.query_params.get('status')
         if status_filter:
             qs = qs.filter(status=status_filter)
@@ -472,7 +472,7 @@ class ActiveOrdersView(APIView):
         if not user_is_staff(request.user):
             return Response({'detail': 'Доступ запрещён'}, status=status.HTTP_403_FORBIDDEN)
 
-        qs = Order.objects.filter(status__in=OrderStatus.active_statuses()).order_by('-created_at')
+        qs = Order.objects.filter(status__in=OrderStatus.active_statuses()).order_by('-id')
         status_filter = request.query_params.get('status')
         if status_filter:
             qs = qs.filter(status=status_filter)

@@ -46,7 +46,7 @@ class OrderAdmin(admin.ModelAdmin):
     ]
     list_filter = ['status', 'created_at']
     search_fields = ['id', 'user__phone', 'address', 'entrance', 'apartment', 'cancel_comment']
-    ordering = ['-created_at']
+    ordering = ['-id']
     inlines = [OrderProductInline, OrderCourierInline]
     filter_horizontal = ['cancel_reasons']
     readonly_fields = [
@@ -70,7 +70,7 @@ class OrderProductAdmin(admin.ModelAdmin):
     list_filter = ['created_at']
     search_fields = ['order__id', 'product__translations__name', 'product__barcodes__barcode']
     autocomplete_fields = ['order', 'product']
-    ordering = ['-created_at']
+    ordering = ['-id']
 
 
 @admin.register(OrderCourier)
@@ -79,7 +79,7 @@ class OrderCourierAdmin(admin.ModelAdmin):
     list_filter = ['created_at', 'completed_at']
     search_fields = ['order__id', 'courier__phone']
     autocomplete_fields = ['order', 'courier']
-    ordering = ['-created_at']
+    ordering = ['-id']
 
 
 @admin.register(DeliverySlot)
