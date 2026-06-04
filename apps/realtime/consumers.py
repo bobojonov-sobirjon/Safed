@@ -138,8 +138,9 @@ class ChatConsumer(AsyncWebsocketConsumer):
                     order_id=room.order_id,
                     sender_id=self.user.id,
                     message_id=obj.id,
-                    message_preview=message[:100],
+                    message_preview=message,
                     sender=self.user,
+                    receiver=receiver,
                 )
                 notification_data = {
                     'receiver_id': receiver.id,
