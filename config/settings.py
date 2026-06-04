@@ -27,9 +27,23 @@ SECRET_KEY = os.getenv('SECRET_KEY', 'django-insecure-change-me-in-production')
 
 DEBUG = os.getenv('DEBUG', 'False').lower() in ('true', '1', 'yes')
 
-# Allowed hosts from environment
+# Production domenlari — .env dan qat’i nazar (admin CSRF / HTTPS)
+_TRUSTED_SITE_ORIGINS: List[str] = [
+    'https://apies.firepole.ru',
+    'http://apies.firepole.ru',
+]
+_TRUSTED_SITE_HOSTS: List[str] = [
+    'apies.firepole.ru',
+    'localhost',
+    '127.0.0.1',
+]
+
 _allowed_hosts = os.getenv('ALLOWED_HOSTS', '*')
-ALLOWED_HOSTS: List[str] = [h.strip() for h in _allowed_hosts.split(',') if h.strip()]
+_env_hosts = [h.strip() for h in _allowed_hosts.split(',') if h.strip()]
+if _env_hosts == ['*']:
+    ALLOWED_HOSTS: List[str] = ['*']
+else:
+    ALLOWED_HOSTS = list(dict.fromkeys(_TRUSTED_SITE_HOSTS + _env_hosts))
 
 # Security headers (production uchun)
 if not DEBUG:
@@ -278,8 +292,12 @@ SIMPLE_JWT = {
 # CORS SETTINGS
 # =============================================================================
 
-_cors_origins = os.getenv('CORS_ORIGINS', 'http://localhost:3000,http://localhost:8000, https://apies.firepole.ru')
-CORS_ALLOWED_ORIGINS = [o.strip() for o in _cors_origins.split(',') if o.strip()]
+_cors_origins = os.getenv(
+    'CORS_ORIGINS',
+    'http://localhost:3000,http://localhost:8000',
+)
+_env_cors = [o.strip() for o in _cors_origins.split(',') if o.strip()]
+CORS_ALLOWED_ORIGINS = list(dict.fromkeys(_TRUSTED_SITE_ORIGINS + _env_cors))
 
 CORS_ALLOW_ALL_ORIGINS = DEBUG  # Only in development
 CORS_ALLOW_CREDENTIALS = True
@@ -295,7 +313,12 @@ CORS_ALLOW_HEADERS = [
     'x-requested-with',
 ]
 
-CSRF_TRUSTED_ORIGINS = CORS_ALLOWED_ORIGINS.copy()
+# Admin login (HTTPS) — har doim production origin (env ustidan)
+CSRF_TRUSTED_ORIGINS = list(dict.fromkeys(_TRUSTED_SITE_ORIGINS + CORS_ALLOWED_ORIGINS))
+
+# Nginx / reverse proxy orqasida HTTPS
+SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
+USE_X_FORWARDED_HOST = True
 
 # =============================================================================
 # API DOCUMENTATION (DRF Spectacular)
