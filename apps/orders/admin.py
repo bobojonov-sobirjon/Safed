@@ -12,6 +12,7 @@ from apps.orders.models import (
     DeliverySlot,
     DeliveryAddress,
     ClickPayment,
+    ClickRefund,
     OrderCancelReason,
 )
 
@@ -62,6 +63,15 @@ class ClickPaymentAdmin(admin.ModelAdmin):
     list_filter = ['state']
     search_fields = ['order__id', 'click_trans_id']
     raw_id_fields = ['order']
+
+
+@admin.register(ClickRefund)
+class ClickRefundAdmin(admin.ModelAdmin):
+    list_display = ['id', 'order', 'amount', 'state', 'click_payment_id', 'created_at', 'completed_at']
+    list_filter = ['state']
+    search_fields = ['order__id', 'click_payment_id', 'idempotency_key']
+    raw_id_fields = ['order', 'source_payment']
+    readonly_fields = ['created_at', 'completed_at']
 
 
 @admin.register(OrderProduct)

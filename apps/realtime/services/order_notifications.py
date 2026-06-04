@@ -91,6 +91,12 @@ PICKING_LINE_BODY = (
     'По заказу №{order_id} уточнено количество товара. Проверьте итоговую сумму в приложении.'
 )
 
+CLICK_REFUND_TITLE = 'Возврат средств'
+CLICK_REFUND_BODY = (
+    'По заказу №{order_id} оформлен возврат {amount} сум через Click. '
+    'Средства поступят на карту в течение нескольких банковских дней.'
+)
+
 STAFF_ORDER_CANCELLED_TITLE = 'Отмена заказа'
 STAFF_ORDER_CANCELLED_BODY = (
     'Заказ №{order_id} отменён покупателем. Проверьте детали в списке заказов.'
@@ -430,6 +436,20 @@ def on_picking_scan(order_id: int) -> None:
 
 def on_picking_line(order_id: int) -> None:
     schedule_after_commit(lambda: notify_customer_picking_line(order_id))
+
+
+def notify_customer_click_refund(order_id: int, amount: str) -> None:
+    notify_user(
+        user_id=_order_user_id(order_id),
+        title=CLICK_REFUND_TITLE,
+        body=CLICK_REFUND_BODY.format(order_id=order_id, amount=amount),
+        notif_type='order_click_refund',
+        data=_order_payload(order_id, event='order_click_refund', amount=amount),
+    )
+
+
+def on_click_refund_processed(order_id: int, amount: str) -> None:
+    schedule_after_commit(lambda: notify_customer_click_refund(order_id, amount))
 
 
 def on_cash_confirmed(order_id: int) -> None:

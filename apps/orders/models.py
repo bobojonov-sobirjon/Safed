@@ -719,3 +719,55 @@ class ClickPayment(models.Model):
 
     def __str__(self) -> str:
         return f'ClickPayment #{self.pk} order={self.order_id} {self.state}'
+
+
+class ClickRefund(models.Model):
+    """CLICK qaytarish (partial_reversal / reversal) — yig‘ishdan keyin."""
+
+    class State(models.TextChoices):
+        PENDING = 'pending', 'Pending'
+        PROCESSING = 'processing', 'Processing'
+        COMPLETED = 'completed', 'Completed'
+        FAILED = 'failed', 'Failed'
+
+    order = models.ForeignKey(
+        Order,
+        on_delete=models.CASCADE,
+        related_name='click_refunds',
+        verbose_name='Заказ',
+    )
+    source_payment = models.ForeignKey(
+        ClickPayment,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='refunds',
+        verbose_name='CLICK to‘lov',
+    )
+    amount = models.DecimalField(max_digits=14, decimal_places=2, verbose_name='Qaytarilgan summa')
+    click_payment_id = models.BigIntegerField(
+        db_index=True,
+        verbose_name='CLICK payment_id (API)',
+    )
+    state = models.CharField(
+        max_length=20,
+        choices=State.choices,
+        default=State.PENDING,
+        db_index=True,
+    )
+    idempotency_key = models.CharField(max_length=128, unique=True, verbose_name='Idempotency key')
+    error_code = models.IntegerField(null=True, blank=True)
+    error_note = models.CharField(max_length=255, blank=True, default='')
+    created_at = models.DateTimeField(auto_now_add=True)
+    completed_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        verbose_name = 'CLICK qaytarish'
+        verbose_name_plural = 'CLICK qaytarishlar'
+        ordering = ['-created_at']
+        indexes = [
+            models.Index(fields=['order', '-created_at']),
+        ]
+
+    def __str__(self) -> str:
+        return f'ClickRefund #{self.pk} order={self.order_id} {self.state} {self.amount}'

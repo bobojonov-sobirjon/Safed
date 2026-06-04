@@ -234,6 +234,15 @@ def confirm_cash_delivery_by_qr(
                 f'Qo‘shimcha to‘lov kerak: {due} UZS. Mijoz POST /orders/{{id}}/click-payment/ orqali to‘lasin.',
                 code='extra_payment_required',
             )
+        from apps.orders.services.click_refund import sync_order_click_refund
+
+        refund_result = sync_order_click_refund(order.pk)
+        if refund_result.get('status') == 'failed':
+            logger.warning(
+                'CLICK refund failed at delivery confirm order=%s result=%s',
+                order.pk,
+                refund_result,
+            )
     else:
         raise CashDeliveryError('Noma’lum to‘lov turi.', code='payment_type')
 

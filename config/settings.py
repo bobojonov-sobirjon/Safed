@@ -551,6 +551,8 @@ CLICK_SECRET_KEY = os.getenv('CLICK_SECRET_KEY', '')
 CLICK_MERCHANT_USER_ID = int(os.getenv('CLICK_MERCHANT_USER_ID', '82888') or '0') or None
 CLICK_PAY_URL = os.getenv('CLICK_PAY_URL', 'https://my.click.uz/services/pay')
 CLICK_RETURN_URL = os.getenv('CLICK_RETURN_URL', '')
+CLICK_MERCHANT_API_URL = os.getenv('CLICK_MERCHANT_API_URL', 'https://api.click.uz/v2/merchant')
+CLICK_REFUND_AUTO = os.getenv('CLICK_REFUND_AUTO', 'true').lower() in ('true', '1', 'yes')
 
 # =============================================================================
 # Firebase (FCM) — service account from .env yoki JSON fayl

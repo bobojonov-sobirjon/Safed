@@ -141,6 +141,10 @@ def apply_picking_quantity(
         'line_total': str(order_product.total_price),
         'line_delta': str((order_product.total_price - old_line_total).quantize(Decimal('0.01'))),
     }
+
+    from apps.orders.services.click_refund import schedule_order_click_refund
+
+    schedule_order_click_refund(order.pk)
     return order, order_product, summary
 
 

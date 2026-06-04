@@ -24,10 +24,14 @@ from apps.orders.views import user_is_staff
 
 
 def _picking_response(request, order: Order, line_summary: dict) -> Response:
+    from apps.orders.services.click_refund import build_refund_status_payload
+
+    settlement = build_order_pricing_payload(order)
+    settlement['click_refund'] = build_refund_status_payload(order)
     return Response({
         'order': OrderListSerializer(order, context={'request': request}).data,
         'line': line_summary,
-        'settlement': build_order_pricing_payload(order),
+        'settlement': settlement,
     })
 
 

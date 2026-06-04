@@ -4,6 +4,7 @@ from asgiref.sync import sync_to_async
 from channels.generic.websocket import AsyncWebsocketConsumer
 
 from .models import ChatRoom, ChatMessage, Notification
+from .services.chat_notifications import chat_notification_ws_payload, notify_chat_receiver
 
 logger = logging.getLogger(__name__)
 
@@ -131,30 +132,18 @@ class ChatConsumer(AsyncWebsocketConsumer):
             
             notification_data = None
             if receiver:
-                # Create notification for receiver
-                notif = Notification.objects.create(
-                    user=receiver,
-                    title='Новое сообщение',
-                    body=message[:100],
-                    type='chat_message',
-                    data={
-                        'room_id': room.id,
-                        'order_id': room.order_id,
-                        'sender_id': self.user.id,
-                        'message_id': obj.id,
-                    }
+                notif = notify_chat_receiver(
+                    receiver_id=receiver.id,
+                    room_id=room.id,
+                    order_id=room.order_id,
+                    sender_id=self.user.id,
+                    message_id=obj.id,
+                    message_preview=message[:100],
+                    sender=self.user,
                 )
                 notification_data = {
                     'receiver_id': receiver.id,
-                    'notification': {
-                        'id': notif.id,
-                        'title': notif.title,
-                        'body': notif.body,
-                        'type': notif.type,
-                        'data': notif.data,
-                        'is_read': notif.is_read,
-                        'created_at': notif.created_at.isoformat(),
-                    }
+                    'notification': chat_notification_ws_payload(notif),
                 }
             
             return {
@@ -186,7 +175,7 @@ class ChatConsumer(AsyncWebsocketConsumer):
             },
         )
         
-        # Send notification to receiver's notification channel
+        # Notification WS (async — ishonchli); FCM — notify_chat_receiver ichida
         if result['notification_data']:
             receiver_id = result['notification_data']['receiver_id']
             await self.channel_layer.group_send(
@@ -195,6 +184,11 @@ class ChatConsumer(AsyncWebsocketConsumer):
                     'type': 'notification_message',
                     'data': result['notification_data']['notification'],
                 },
+            )
+            logger.info(
+                'Chat WS notif sent room=%s receiver=%s',
+                self.room_id,
+                receiver_id,
             )
 
     async def _handle_read(self):

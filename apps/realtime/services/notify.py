@@ -67,8 +67,9 @@ def notify_user(
     notif_type: str = '',
     data: Optional[Dict[str, Any]] = None,
     send_push: bool = True,
+    send_ws: bool = True,
 ) -> Notification:
-    """Create DB row, WS event, and FCM for one user."""
+    """Create DB row, optional WS (`notif_{id}`), optional FCM."""
     notif = Notification.objects.create(
         user_id=user_id,
         title=title,
@@ -77,7 +78,8 @@ def notify_user(
         data=data or {},
     )
     payload = _serialize_notification(notif)
-    _push_ws(user_id, payload)
+    if send_ws:
+        _push_ws(user_id, payload)
     if send_push:
         fcm_data = {**payload['data'], 'type': notif.type or ''}
         fcm_data.setdefault('order_id', str(fcm_data.get('order_id', '')))

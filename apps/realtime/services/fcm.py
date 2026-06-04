@@ -122,6 +122,16 @@ def _load_firebase_certificate():
     return credentials.Certificate(build_firebase_cred_dict())
 
 
+def _refresh_fcm_session_credentials(session) -> None:
+    """Bearer sarlavhasi bo‘lishi uchun OAuth token yangilash."""
+    from google.auth.transport.requests import Request
+
+    if not getattr(session, 'credentials', None):
+        return
+    if not session.credentials.token or session.credentials.expired:
+        session.credentials.refresh(Request())
+
+
 def _fcm_authed_session():
     """AuthorizedSession — Bearer avtomatik; proxy (HTTP_PROXY) o‘chirilgan."""
     from google.auth.transport.requests import AuthorizedSession
@@ -133,6 +143,7 @@ def _fcm_authed_session():
     )
     session = AuthorizedSession(creds)
     session.trust_env = False
+    _refresh_fcm_session_credentials(session)
     return session
 
 
@@ -227,6 +238,7 @@ def send_fcm_http_v1(
         message['data'] = {str(k): str(v) for k, v in data.items()}
 
     http = session or _fcm_authed_session()
+    _refresh_fcm_session_credentials(http)
     response = http.post(
         url,
         json={'validate_only': validate_only, 'message': message},
@@ -358,6 +370,38 @@ def _is_obviously_invalid_token(token: str) -> bool:
     return value.lower() in {'string', 'test', 'token', 'fcm_token', 'device_token'}
 
 
+def _fcm_error_codes(payload: Dict[str, Any]) -> List[str]:
+    err = payload.get('error') or {}
+    codes: List[str] = []
+    for item in err.get('details') or []:
+        code = item.get('errorCode') or item.get('reason')
+        if code:
+            codes.append(str(code))
+    return codes
+
+
+def _is_token_project_mismatch(payload: Dict[str, Any]) -> bool:
+    """401/400 — mobil token boshqa Firebase loyihadan."""
+    codes = {c.upper() for c in _fcm_error_codes(payload)}
+    if codes & {'THIRD_PARTY_AUTH_ERROR', 'SENDER_ID_MISMATCH'}:
+        return True
+    msg = ((payload.get('error') or {}).get('message') or '').lower()
+    return 'senderid' in msg or 'registration token' in msg
+
+
+def _is_service_account_auth_failure(status: int, payload: Dict[str, Any]) -> bool:
+    """Haqiqiy .env / OAuth muammosi (token emas)."""
+    if status not in (401, 403):
+        return False
+    if _is_token_project_mismatch(payload):
+        return False
+    err_status = ((payload.get('error') or {}).get('status') or '').upper()
+    if status == 403 or err_status == 'PERMISSION_DENIED':
+        return True
+    codes = _fcm_error_codes(payload)
+    return not codes
+
+
 def _parse_fcm_http_error(status: int, payload: Dict[str, Any]) -> Dict[str, Any]:
     err = payload.get('error') or {}
     return {
@@ -365,6 +409,8 @@ def _parse_fcm_http_error(status: int, payload: Dict[str, Any]) -> Dict[str, Any
         'status': (err.get('status') or '').upper(),
         'message': err.get('message') or str(payload),
         'code': err.get('code'),
+        'fcm_error_codes': _fcm_error_codes(payload),
+        'token_project_mismatch': _is_token_project_mismatch(payload),
     }
 
 
@@ -417,6 +463,20 @@ def send_fcm_to_tokens(
         info = _parse_fcm_http_error(status, body)
         msg = info['message']
         err_status = info['status']
+        fcm_codes = info.get('fcm_error_codes') or []
+        project_id = getattr(settings, 'FIREBASE_PROJECT_ID', '')
+
+        if info.get('token_project_mismatch'):
+            logger.error(
+                'FCM: device token boshqa Firebase loyihadan (HTTP %s, codes=%s). '
+                'Mobil google-services.json project_id=%s bo‘lishi kerak. token=%s…',
+                status,
+                fcm_codes or ['SENDER_MISMATCH'],
+                project_id,
+                token[:12],
+            )
+            _deactivate_device_token(token)
+            continue
 
         if status == 403 or err_status == 'PERMISSION_DENIED':
             _auth_failed = True
@@ -425,21 +485,27 @@ def send_fcm_to_tokens(
                 'Google Cloud → %s → Firebase Cloud Messaging API → ENABLE. '
                 'python manage.py check_fcm_config',
                 msg,
-                getattr(settings, 'FIREBASE_PROJECT_ID', ''),
+                project_id,
             )
             break
 
-        if status == 401 or err_status == 'UNAUTHENTICATED':
+        if _is_service_account_auth_failure(status, body):
             _auth_failed = True
             cred_token = getattr(session.credentials, 'token', None) or ''
             logger.error(
-                'FCM auth (HTTP 401): %s — oauth_token_len=%s. '
+                'FCM service account auth (HTTP %s): %s — oauth_token_len=%s. '
                 'HTTP_PROXY bo‘lsa: NO_PROXY=fcm.googleapis.com. '
-                'Token boshqa Firebase project bo‘lishi mumkin.',
+                'python manage.py check_fcm_config',
+                status,
                 msg,
                 len(cred_token),
             )
             break
+
+        if status == 401 or err_status == 'UNAUTHENTICATED':
+            logger.warning('FCM HTTP 401 token=%s…: %s', token[:12], msg[:200])
+            _deactivate_device_token(token)
+            continue
 
         if status == 404 or err_status == 'NOT_FOUND' or 'not registered' in msg.lower():
             logger.warning('FCM: unregistered token=%s… — %s', token[:12], msg[:120])
