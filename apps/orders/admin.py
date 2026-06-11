@@ -11,6 +11,9 @@ from apps.orders.models import (
     BusyDayWorkingHours,
     DeliverySlot,
     DeliveryAddress,
+    DeliveryZone,
+    CashbackSettings,
+    CashbackTransaction,
     ClickPayment,
     ClickRefund,
     OrderCancelReason,
@@ -127,3 +130,23 @@ class OrderFeeSettingsAdmin(admin.ModelAdmin):
         'min_order_subtotal', 'weight_buffer_percent', 'loyalty_point_currency_value',
         'hourly_delivery_capacity', 'updated_at',
     ]
+
+
+@admin.register(DeliveryZone)
+class DeliveryZoneAdmin(admin.ModelAdmin):
+    list_display = ['id', 'name', 'address', 'radius_m', 'is_active', 'updated_at']
+    list_filter = ['is_active']
+    search_fields = ['name', 'address']
+
+
+@admin.register(CashbackSettings)
+class CashbackSettingsAdmin(admin.ModelAdmin):
+    list_display = ['id', 'cashback_percent', 'is_active', 'updated_at']
+
+
+@admin.register(CashbackTransaction)
+class CashbackTransactionAdmin(admin.ModelAdmin):
+    list_display = ['id', 'user', 'order', 'amount', 'transaction_type', 'balance_after', 'created_at']
+    list_filter = ['transaction_type', 'created_at']
+    search_fields = ['user__phone', 'order__id']
+    raw_id_fields = ['user', 'order']

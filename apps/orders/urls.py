@@ -44,4 +44,11 @@ urlpatterns = [
     path('admin/fees/settings/', views.OrderFeeSettingsView.as_view(), name='order-fee-settings'),
     path('admin/fees/delivery-rules/', views.DeliveryFeeRuleListCreateView.as_view(), name='delivery-fee-rule-list-create'),
     path('admin/fees/delivery-rules/<int:pk>/', views.DeliveryFeeRuleDetailView.as_view(), name='delivery-fee-rule-detail'),
+    path('admin/delivery-zones/', views.DeliveryZoneListCreateView.as_view(), name='delivery-zone-list-create'),
+    path('admin/delivery-zones/<int:pk>/', views.DeliveryZoneDetailView.as_view(), name='delivery-zone-detail'),
+    path('admin/cashback/settings/', views.CashbackSettingsView.as_view(), name='cashback-settings'),
+    path('admin/cashback/transactions/', views.CashbackTransactionListView.as_view(), name='cashback-transactions'),
+    path('checkout/delivery-zone/check/', checkout_views.DeliveryZoneCheckView.as_view(), name='delivery-zone-check'),
+    path('users/me/cashback/', checkout_views.UserCashbackView.as_view(), name='user-cashback'),
+    path('users/me/cashback/history/', checkout_views.UserCashbackHistoryView.as_view(), name='user-cashback-history'),
 ]

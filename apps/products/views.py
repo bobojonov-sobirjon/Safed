@@ -26,6 +26,7 @@ from .serializers import (
     ProductSavedUserSerializer,
 )
 from .services import ProductService
+from .services.product_search import filter_products_by_query
 from .services.product_write import create_product_barcode
 from .openapi_product import PRODUCT_CREATE_DESCRIPTION, PRODUCT_UNIT_FORM_FIELDS
 
@@ -447,17 +448,7 @@ class ProductListCreateView(APIView):
         qs = Products.objects.all().order_by(*PRODUCT_LIST_ORDERING)
         q = (request.query_params.get('q') or '').strip()
         if q:
-            search_ids = (
-                Products.objects.filter(
-                    Q(unique_id__icontains=q)
-                    | Q(barcodes__barcode__icontains=q)
-                    | Q(translations__name__icontains=q)
-                    | Q(translations__description__icontains=q)
-                )
-                .values_list('pk', flat=True)
-                .distinct()
-            )
-            qs = qs.filter(pk__in=search_ids).order_by(*PRODUCT_LIST_ORDERING)
+            qs = filter_products_by_query(qs, q).order_by(*PRODUCT_LIST_ORDERING)
         cat = request.query_params.get('category')
         if cat:
             category_ids = self._get_category_with_descendants(int(cat))

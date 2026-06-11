@@ -16,6 +16,9 @@ from .models import (
     BusySlot,
     DeliverySlot,
     DeliveryAddress,
+    DeliveryZone,
+    CashbackSettings,
+    CashbackTransaction,
     OrderCancelReason,
 )
 from apps.products.models import Products
@@ -298,14 +301,25 @@ class OrderCreateSerializer(serializers.Serializer):
     def validate(self, attrs):
         user = self.context['request'].user
         addr_id = attrs.get('delivery_address_id')
+        order_lat = attrs.get('lat')
+        order_lon = attrs.get('long')
         if addr_id:
-            if not DeliveryAddress.objects.filter(pk=addr_id, user=user).exists():
+            da = DeliveryAddress.objects.filter(pk=addr_id, user=user).first()
+            if not da:
                 raise serializers.ValidationError({'delivery_address_id': 'Адрес не найден.'})
+            order_lat = da.lat if order_lat is None else order_lat
+            order_lon = da.long if order_lon is None else order_lon
         else:
-            if attrs.get('lat') is None or attrs.get('long') is None or not (attrs.get('address') or '').strip():
+            if order_lat is None or order_lon is None or not (attrs.get('address') or '').strip():
                 raise serializers.ValidationError(
                     'Укажите lat, long и address или передайте delivery_address_id.'
                 )
+
+        from apps.orders.services.delivery_zone import validate_delivery_location
+
+        zone_err = validate_delivery_location(order_lat, order_lon)
+        if zone_err:
+            raise serializers.ValidationError({'delivery_address_id': zone_err, 'lat': zone_err, 'long': zone_err})
 
         dd = attrs.get('delivery_date')
         ts = (attrs.get('delivery_time_start') or '').strip() if attrs.get('delivery_time_start') is not None else ''
@@ -367,8 +381,22 @@ class OrderUpdateSerializer(serializers.Serializer):
         user = self.context['request'].user
         raw = getattr(self, 'initial_data', None) or {}
         if attrs.get('delivery_address_id'):
-            if not DeliveryAddress.objects.filter(pk=attrs['delivery_address_id'], user=user).exists():
+            da = DeliveryAddress.objects.filter(pk=attrs['delivery_address_id'], user=user).first()
+            if not da:
                 raise serializers.ValidationError({'delivery_address_id': 'Адрес не найден.'})
+        if any(k in raw for k in ('lat', 'long', 'delivery_address_id')):
+            order_lat = attrs.get('lat')
+            order_lon = attrs.get('long')
+            if attrs.get('delivery_address_id'):
+                da = DeliveryAddress.objects.filter(pk=attrs['delivery_address_id'], user=user).first()
+                if da:
+                    order_lat = da.lat if order_lat is None else order_lat
+                    order_lon = da.long if order_lon is None else order_lon
+            from apps.orders.services.delivery_zone import validate_delivery_location
+
+            zone_err = validate_delivery_location(order_lat, order_lon)
+            if zone_err:
+                raise serializers.ValidationError({'delivery_address_id': zone_err, 'lat': zone_err, 'long': zone_err})
         if not any(k in raw for k in ('delivery_date', 'delivery_time_start', 'delivery_time_end')):
             return attrs
         dd = attrs.get('delivery_date')
@@ -1006,3 +1034,71 @@ class DeliveryFeeRuleSerializer(serializers.ModelSerializer):
             },
             'created_at': {'help_text': 'Дата создания записи (только чтение).'},
         }
+
+
+class DeliveryZoneSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = DeliveryZone
+        fields = [
+            'id',
+            'name',
+            'address',
+            'lat',
+            'long',
+            'radius_m',
+            'is_active',
+            'created_at',
+            'updated_at',
+        ]
+        read_only_fields = ['id', 'created_at', 'updated_at']
+        extra_kwargs = {
+            'address': {'help_text': 'Markaz manzili (matn).'},
+            'lat': {'help_text': 'Markaz kengligi.'},
+            'long': {'help_text': 'Markaz uzunligi.'},
+            'radius_m': {'help_text': 'Radius metrlarda — shu masofadan tashqarida buyurtma ochilmaydi.'},
+            'is_active': {'help_text': 'Faol zonalar ichida bo‘lmasa buyurtma rad etiladi.'},
+        }
+
+
+class DeliveryZoneCheckSerializer(serializers.Serializer):
+    lat = serializers.DecimalField(
+        max_digits=GEO_COORD_MAX_DIGITS,
+        decimal_places=GEO_COORD_DECIMAL_PLACES,
+    )
+    long = serializers.DecimalField(
+        max_digits=GEO_COORD_MAX_DIGITS,
+        decimal_places=GEO_COORD_DECIMAL_PLACES,
+    )
+
+
+class DeliveryZoneCheckResponseSerializer(serializers.Serializer):
+    allowed = serializers.BooleanField()
+    message = serializers.CharField(allow_blank=True)
+    nearest_zone_id = serializers.IntegerField(allow_null=True, required=False)
+    distance_m = serializers.FloatField(allow_null=True, required=False)
+
+
+class CashbackSettingsSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = CashbackSettings
+        fields = ['id', 'cashback_percent', 'is_active', 'updated_at']
+        read_only_fields = ['id', 'updated_at']
+        extra_kwargs = {
+            'cashback_percent': {'help_text': 'Buyurtma summasidan cashback foizi (0–100).'},
+            'is_active': {'help_text': 'O‘chirilsa — yangi cashback hisoblanmaydi.'},
+        }
+
+
+class CashbackTransactionSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = CashbackTransaction
+        fields = [
+            'id',
+            'order',
+            'amount',
+            'transaction_type',
+            'balance_after',
+            'note',
+            'created_at',
+        ]
+        read_only_fields = fields

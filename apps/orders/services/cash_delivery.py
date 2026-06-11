@@ -145,6 +145,9 @@ def _finalize_delivery_qr_confirm(order: Order, *, courier_user) -> Dict[str, An
         ],
     )
     deduct_order_stock(order)
+    from apps.orders.services.cashback import accrue_order_cashback
+
+    accrue_order_cashback(order)
 
     payload = {
         'order_id': order.pk,

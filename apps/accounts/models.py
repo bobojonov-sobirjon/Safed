@@ -2,6 +2,7 @@
 User and authentication models.
 """
 from __future__ import annotations
+from decimal import Decimal
 from typing import Optional
 from django.contrib.auth.models import AbstractUser, Group, Permission
 from django.db import models
@@ -56,6 +57,12 @@ class CustomUser(AbstractUser):
         default=0,
         verbose_name='Баллы лояльности',
         help_text='Списание при оформлении заказа; не более 50% суммы заказа (см. pricing).',
+    )
+    cashback_balance = models.DecimalField(
+        max_digits=14,
+        decimal_places=2,
+        default=Decimal('0.00'),
+        verbose_name='Накопительный cashback (UZS)',
     )
 
     objects = CustomUserManager()

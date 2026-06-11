@@ -29,6 +29,9 @@ from .serializers import (
     OrderListSerializer,
     OrderCancelReasonSerializer,
     OrderUserCancelSerializer,
+    DeliveryZoneCheckSerializer,
+    DeliveryZoneCheckResponseSerializer,
+    CashbackTransactionSerializer,
 )
 from .pricing import build_pricing_preview
 from .request_parsing import parse_order_request_data
@@ -339,3 +342,73 @@ class OrderUserCancelView(APIView):
 
         order = Order.objects.prefetch_related('cancel_reasons').get(pk=order.pk)
         return Response(OrderListSerializer(order, context={'request': request}).data)
+
+
+@extend_schema(
+    tags=[TAG_ADDRESSES],
+    summary='Zona доставки: tekshirish',
+    description='Mijoz manzili yetkazish zonasida ekanini tekshirish (lat/long).',
+    parameters=[
+        OpenApiParameter('lat', OpenApiTypes.NUMBER, OpenApiParameter.QUERY, required=True),
+        OpenApiParameter('long', OpenApiTypes.NUMBER, OpenApiParameter.QUERY, required=True),
+    ],
+    responses={200: DeliveryZoneCheckResponseSerializer},
+)
+class DeliveryZoneCheckView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        ser = DeliveryZoneCheckSerializer(data=request.query_params)
+        if not ser.is_valid():
+            return Response(ser.errors, status=status.HTTP_400_BAD_REQUEST)
+        lat = ser.validated_data['lat']
+        lon = ser.validated_data['long']
+        from apps.orders.services.delivery_zone import (
+            is_location_in_delivery_zone,
+            nearest_zone_distance_m,
+            validate_delivery_location,
+        )
+
+        allowed = is_location_in_delivery_zone(lat, lon)
+        nearest = nearest_zone_distance_m(lat, lon)
+        payload = {
+            'allowed': allowed,
+            'message': '' if allowed else (validate_delivery_location(lat, lon) or ''),
+            'nearest_zone_id': nearest[0] if nearest else None,
+            'distance_m': round(nearest[1], 2) if nearest else None,
+        }
+        return Response(payload)
+
+
+@extend_schema(
+    tags=[TAG_MY_ORDERS],
+    summary='Mening cashback balansim',
+)
+class UserCashbackView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        from apps.orders.services.cashback import get_cashback_settings
+
+        user = request.user
+        settings = get_cashback_settings()
+        return Response({
+            'cashback_balance': str(user.cashback_balance),
+            'cashback_percent': str(settings.cashback_percent),
+            'cashback_active': settings.is_active,
+        })
+
+
+@extend_schema(
+    tags=[TAG_MY_ORDERS],
+    summary='Cashback tarixi',
+    responses=CashbackTransactionSerializer(many=True),
+)
+class UserCashbackHistoryView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        from .models import CashbackTransaction
+
+        qs = CashbackTransaction.objects.filter(user=request.user).order_by('-created_at', '-id')[:100]
+        return Response(CashbackTransactionSerializer(qs, many=True).data)

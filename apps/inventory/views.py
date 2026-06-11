@@ -19,7 +19,14 @@ from apps.orders.views import user_is_operator_or_super_admin
 from apps.products.models import Products, ProductBarcode
 from apps.products.serializers import ProductListSerializer
 
-from .models import Supplier, StockReceipt, StockReceiptItem, ReceiptStatus
+from .models import (
+    Supplier,
+    StockReceipt,
+    StockReceiptItem,
+    ReceiptStatus,
+    SupplierReconciliationAct,
+    ReconciliationActStatus,
+)
 from .serializers import (
     SupplierSerializer,
     StockReceiptSerializer,
@@ -29,8 +36,19 @@ from .serializers import (
     ReceiptItemCreateUpdateSerializer,
     BarcodeLookupSerializer,
     ProductRestockSerializer,
+    SupplierReconciliationActSerializer,
+    SupplierReconciliationActCreateSerializer,
+    SupplierReconciliationActUpdateSerializer,
+    SupplierReconciliationActDetailSerializer,
 )
 from .services.stock import StockError, restock_product_by_barcode
+from .services.receipt import ReceiptError, post_stock_receipt, cancel_stock_receipt, recalculate_receipt_subtotal
+from .services.reconciliation import (
+    ReconciliationError,
+    build_reconciliation_preview,
+    confirm_reconciliation_act,
+    posted_receipts_for_period,
+)
 
 
 def user_is_admin(user) -> bool:
@@ -66,6 +84,17 @@ class AdminOnlyMixin:
     permission_classes = [IsInventoryAdmin]
 
 
+def _paginate_queryset(request, qs):
+    try:
+        limit = int(request.query_params.get('limit', 50))
+        offset = int(request.query_params.get('offset', 0))
+    except (TypeError, ValueError):
+        return None, qs
+    limit = max(1, min(limit, 200))
+    offset = max(0, offset)
+    return {'limit': limit, 'offset': offset, 'count': qs.count()}, qs[offset:offset + limit]
+
+
 # =============================================================================
 # Suppliers
 # =============================================================================
@@ -76,9 +105,32 @@ class AdminOnlyMixin:
     description='Справочник поставщиков. Доступ: только группы **Super Admin** и **Admin**.',
 )
 class SupplierListCreateView(AdminOnlyMixin, APIView):
+    @extend_schema(
+        parameters=[
+            OpenApiParameter('is_active', OpenApiTypes.BOOL, OpenApiParameter.QUERY, required=False),
+            OpenApiParameter('q', OpenApiTypes.STR, OpenApiParameter.QUERY, required=False, description='Поиск по name, phone, inn'),
+            OpenApiParameter('limit', OpenApiTypes.INT, OpenApiParameter.QUERY, required=False),
+            OpenApiParameter('offset', OpenApiTypes.INT, OpenApiParameter.QUERY, required=False),
+        ],
+    )
     def get(self, request):
         qs = Supplier.objects.all().order_by('-created_at')
-        return Response(SupplierSerializer(qs, many=True).data)
+        is_active = request.query_params.get('is_active')
+        if is_active is not None:
+            qs = qs.filter(is_active=str(is_active).lower() in ('true', '1', 'yes'))
+        q = (request.query_params.get('q') or '').strip()
+        if q:
+            qs = qs.filter(
+                models.Q(name__icontains=q)
+                | models.Q(phone__icontains=q)
+                | models.Q(inn__icontains=q)
+                | models.Q(contact_person__icontains=q)
+            )
+        meta, page = _paginate_queryset(request, qs)
+        data = SupplierSerializer(page, many=True).data
+        if meta:
+            return Response({'count': meta['count'], 'limit': meta['limit'], 'offset': meta['offset'], 'results': data})
+        return Response(data)
 
     @extend_schema(
         request=SupplierSerializer,
@@ -150,6 +202,18 @@ class SupplierDetailView(AdminOnlyMixin, APIView):
     parameters=[
         OpenApiParameter(name='date_from', type=OpenApiTypes.DATE, required=False, description='Дата от (YYYY-MM-DD)'),
         OpenApiParameter(name='date_to', type=OpenApiTypes.DATE, required=False, description='Дата до (YYYY-MM-DD)'),
+        OpenApiParameter(
+            name='status',
+            type=OpenApiTypes.STR,
+            required=False,
+            description='Фильтр статуса приходов. По умолчанию `posted`.',
+        ),
+        OpenApiParameter(
+            name='opening_balance',
+            type=OpenApiTypes.DECIMAL,
+            required=False,
+            description='Начальный долг поставщику на начало периода (для акта сверки).',
+        ),
     ],
 )
 class SupplierStatementView(AdminOnlyMixin, APIView):
@@ -161,20 +225,31 @@ class SupplierStatementView(AdminOnlyMixin, APIView):
 
         date_from = parse_date(request.query_params.get('date_from') or '') if request.query_params.get('date_from') else None
         date_to = parse_date(request.query_params.get('date_to') or '') if request.query_params.get('date_to') else None
+        status_filter = (request.query_params.get('status') or 'posted').strip()
+        try:
+            opening_balance = Decimal(str(request.query_params.get('opening_balance') or '0'))
+        except Exception:
+            opening_balance = Decimal('0.00')
 
-        qs = StockReceipt.objects.filter(supplier=supplier).order_by('-doc_date', '-id')
+        qs = StockReceipt.objects.filter(supplier=supplier).select_related('supplier', 'created_by').order_by('doc_date', 'id')
+        if status_filter and status_filter != 'all':
+            qs = qs.filter(status=status_filter)
         if date_from:
             qs = qs.filter(doc_date__gte=date_from)
         if date_to:
             qs = qs.filter(doc_date__lte=date_to)
 
-        total = qs.aggregate(sum=Sum('subtotal')).get('sum') or 0
+        total = qs.aggregate(sum=Sum('subtotal')).get('sum') or Decimal('0.00')
+        closing_balance = (opening_balance + total).quantize(Decimal('0.01'))
         return Response({
             'supplier': SupplierSerializer(supplier).data,
             'date_from': date_from.isoformat() if date_from else None,
             'date_to': date_to.isoformat() if date_to else None,
+            'status_filter': status_filter,
+            'opening_balance': str(opening_balance.quantize(Decimal('0.01'))),
             'total_receipts': qs.count(),
             'total_amount': str(total),
+            'closing_balance': str(closing_balance),
             'receipts': StockReceiptSerializer(qs, many=True, context={'request': request}).data,
         })
 
@@ -204,6 +279,10 @@ class ReceiptListCreateView(AdminOnlyMixin, APIView):
                 required=False,
                 description='Фильтр по ID поставщика.',
             ),
+            OpenApiParameter(name='date_from', type=OpenApiTypes.DATE, required=False),
+            OpenApiParameter(name='date_to', type=OpenApiTypes.DATE, required=False),
+            OpenApiParameter(name='limit', type=OpenApiTypes.INT, required=False),
+            OpenApiParameter(name='offset', type=OpenApiTypes.INT, required=False),
         ],
     )
     def get(self, request):
@@ -214,7 +293,17 @@ class ReceiptListCreateView(AdminOnlyMixin, APIView):
         supplier_id = request.query_params.get('supplier')
         if supplier_id:
             qs = qs.filter(supplier_id=supplier_id)
-        return Response(StockReceiptSerializer(qs, many=True, context={'request': request}).data)
+        date_from = parse_date(request.query_params.get('date_from') or '') if request.query_params.get('date_from') else None
+        date_to = parse_date(request.query_params.get('date_to') or '') if request.query_params.get('date_to') else None
+        if date_from:
+            qs = qs.filter(doc_date__gte=date_from)
+        if date_to:
+            qs = qs.filter(doc_date__lte=date_to)
+        meta, page = _paginate_queryset(request, qs)
+        data = StockReceiptSerializer(page, many=True, context={'request': request}).data
+        if meta:
+            return Response({'count': meta['count'], 'limit': meta['limit'], 'offset': meta['offset'], 'results': data})
+        return Response(data)
 
     @extend_schema(
         request=StockReceiptCreateSerializer,
@@ -269,11 +358,11 @@ class ReceiptDetailView(AdminOnlyMixin, APIView):
             return Response({'detail': 'Не найден'}, status=status.HTTP_404_NOT_FOUND)
         if receipt.status != ReceiptStatus.DRAFT:
             return Response({'detail': 'Изменение возможно только в статусе черновик (draft)'}, status=status.HTTP_400_BAD_REQUEST)
-        # allow updating header fields
-        for f in ['supplier', 'doc_number', 'doc_date', 'status']:
-            if f in request.data:
-                setattr(receipt, f, request.data.get(f))
-        receipt.save()
+        serializer = StockReceiptHeaderUpdateSerializer(receipt, data=request.data, partial=True)
+        if not serializer.is_valid():
+            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+        serializer.save()
+        receipt.refresh_from_db()
         return Response(StockReceiptSerializer(receipt, context={'request': request}).data)
 
 
@@ -292,22 +381,40 @@ class ReceiptPostView(AdminOnlyMixin, APIView):
     @extend_schema(summary='Приход: провести')
     def post(self, request, pk):
         try:
-            receipt = StockReceipt.objects.select_for_update().get(pk=pk)
+            receipt = StockReceipt.objects.get(pk=pk)
         except StockReceipt.DoesNotExist:
             return Response({'detail': 'Не найден'}, status=status.HTTP_404_NOT_FOUND)
-        if receipt.status != ReceiptStatus.DRAFT:
-            return Response({'detail': 'Проведение возможно только из статуса черновик (draft)'}, status=status.HTTP_400_BAD_REQUEST)
+        try:
+            with transaction.atomic():
+                receipt = post_stock_receipt(receipt, posted_by=request.user)
+        except ReceiptError as exc:
+            return Response({'detail': exc.message, 'code': exc.code}, status=status.HTTP_400_BAD_REQUEST)
+        receipt = StockReceipt.objects.select_related('supplier', 'created_by').prefetch_related('items').get(pk=receipt.pk)
+        return Response(StockReceiptSerializer(receipt, context={'request': request}).data)
 
-        with transaction.atomic():
-            items = list(receipt.items.select_related('product'))
-            if not items:
-                return Response({'detail': 'Документ пустой'}, status=status.HTTP_400_BAD_REQUEST)
-            # increment stock
-            for it in items:
-                Products.objects.filter(pk=it.product_id).update(quantity=models.F('quantity') + it.quantity)
-            receipt.status = ReceiptStatus.POSTED
-            receipt.save(update_fields=['status', 'updated_at'])
 
+@extend_schema(
+    tags=['Инвентаризация / Приходы'],
+    summary='Приход: отменить',
+    description='''Отмена прихода.
+
+- **draft** → `cancelled` (без изменения остатков)
+- **posted** → `cancelled` (остатки уменьшаются на количество строк)
+
+Доступ: только **Super Admin** и **Admin**.''',
+)
+class ReceiptCancelView(AdminOnlyMixin, APIView):
+    def post(self, request, pk):
+        try:
+            receipt = StockReceipt.objects.get(pk=pk)
+        except StockReceipt.DoesNotExist:
+            return Response({'detail': 'Не найден'}, status=status.HTTP_404_NOT_FOUND)
+        try:
+            with transaction.atomic():
+                receipt = cancel_stock_receipt(receipt, cancelled_by=request.user)
+        except ReceiptError as exc:
+            return Response({'detail': exc.message, 'code': exc.code}, status=status.HTTP_400_BAD_REQUEST)
+        receipt = StockReceipt.objects.select_related('supplier', 'created_by').prefetch_related('items').get(pk=receipt.pk)
         return Response(StockReceiptSerializer(receipt, context={'request': request}).data)
 
 
@@ -380,9 +487,7 @@ class ReceiptItemListCreateView(AdminOnlyMixin, APIView):
             barcode_snapshot=barcode,
         )
 
-        # update receipt subtotal
-        receipt.subtotal = receipt.items.aggregate(sum=Sum('line_total')).get('sum') or Decimal('0.00')
-        receipt.save(update_fields=['subtotal', 'updated_at'])
+        recalculate_receipt_subtotal(receipt)
 
         return Response(ReceiptItemSerializer(item, context={'request': request}).data, status=status.HTTP_201_CREATED)
 
@@ -435,8 +540,7 @@ class ReceiptItemDetailView(AdminOnlyMixin, APIView):
         item.barcode_snapshot = ProductBarcode.objects.filter(product_id=product.id, is_deleted=False).values_list('barcode', flat=True).first() or ''
         item.save()
 
-        receipt.subtotal = receipt.items.aggregate(sum=Sum('line_total')).get('sum') or Decimal('0.00')
-        receipt.save(update_fields=['subtotal', 'updated_at'])
+        recalculate_receipt_subtotal(receipt)
 
         return Response(ReceiptItemSerializer(item, context={'request': request}).data)
 
@@ -456,8 +560,7 @@ class ReceiptItemDetailView(AdminOnlyMixin, APIView):
         except StockReceiptItem.DoesNotExist:
             return Response({'detail': 'Не найден'}, status=status.HTTP_404_NOT_FOUND)
         item.delete()
-        receipt.subtotal = receipt.items.aggregate(sum=Sum('line_total')).get('sum') or Decimal('0.00')
-        receipt.save(update_fields=['subtotal', 'updated_at'])
+        recalculate_receipt_subtotal(receipt)
         return Response(status=status.HTTP_204_NO_CONTENT)
 
 
@@ -523,4 +626,161 @@ class ProductRestockByBarcodeView(APIView):
             },
             status=status.HTTP_200_OK,
         )
+
+
+# =============================================================================
+# Reconciliation acts (акт сверки)
+# =============================================================================
+
+
+@extend_schema(
+    tags=['Инвентаризация / Акт сверки'],
+    summary='Акты сверки: список / создать черновик',
+)
+class ReconciliationActListCreateView(AdminOnlyMixin, APIView):
+    @extend_schema(
+        parameters=[
+            OpenApiParameter('supplier', OpenApiTypes.INT, OpenApiParameter.QUERY, required=False),
+            OpenApiParameter('status', OpenApiTypes.STR, OpenApiParameter.QUERY, required=False),
+            OpenApiParameter('limit', OpenApiTypes.INT, OpenApiParameter.QUERY, required=False),
+            OpenApiParameter('offset', OpenApiTypes.INT, OpenApiParameter.QUERY, required=False),
+        ],
+    )
+    def get(self, request):
+        qs = SupplierReconciliationAct.objects.select_related('supplier').order_by('-created_at')
+        supplier_id = request.query_params.get('supplier')
+        if supplier_id:
+            qs = qs.filter(supplier_id=supplier_id)
+        status_filter = request.query_params.get('status')
+        if status_filter:
+            qs = qs.filter(status=status_filter)
+        meta, page = _paginate_queryset(request, qs)
+        data = SupplierReconciliationActSerializer(page, many=True).data
+        if meta:
+            return Response({'count': meta['count'], 'limit': meta['limit'], 'offset': meta['offset'], 'results': data})
+        return Response(data)
+
+    @extend_schema(
+        request=SupplierReconciliationActCreateSerializer,
+        responses=SupplierReconciliationActDetailSerializer,
+        summary='Акт сверки: создать черновик',
+        description='''Создаёт черновик акта сверки с поставщиком за период.
+
+После создания можно просмотреть превью приходов. Подтверждение — `POST .../confirm/`.''',
+    )
+    def post(self, request):
+        serializer = SupplierReconciliationActCreateSerializer(data=request.data)
+        if not serializer.is_valid():
+            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+        v = serializer.validated_data
+        supplier = Supplier.objects.get(pk=v['supplier_id'])
+        preview = build_reconciliation_preview(
+            supplier,
+            period_from=v['period_from'],
+            period_to=v['period_to'],
+            opening_balance=v.get('opening_balance') or Decimal('0.00'),
+        )
+        act = SupplierReconciliationAct.objects.create(
+            supplier=supplier,
+            period_from=v['period_from'],
+            period_to=v['period_to'],
+            opening_balance=(v.get('opening_balance') or Decimal('0.00')).quantize(Decimal('0.01')),
+            receipts_total=preview['receipts_total'],
+            receipts_count=preview['receipts_count'],
+            closing_balance=preview['closing_balance'],
+            notes=v.get('notes') or '',
+            created_by=request.user,
+        )
+        return Response(
+            _reconciliation_act_detail_payload(act, preview['receipts'], request),
+            status=status.HTTP_201_CREATED,
+        )
+
+
+def _reconciliation_act_detail_payload(act, receipts, request):
+    data = SupplierReconciliationActDetailSerializer(act).data
+    data['receipts'] = StockReceiptSerializer(receipts, many=True, context={'request': request}).data
+    return data
+
+
+@extend_schema(tags=['Инвентаризация / Акт сверки'])
+class ReconciliationActDetailView(AdminOnlyMixin, APIView):
+    @extend_schema(
+        responses=SupplierReconciliationActDetailSerializer,
+        summary='Акт сверки: детали',
+    )
+    def get(self, request, pk):
+        try:
+            act = SupplierReconciliationAct.objects.select_related('supplier').get(pk=pk)
+        except SupplierReconciliationAct.DoesNotExist:
+            return Response({'detail': 'Не найден'}, status=status.HTTP_404_NOT_FOUND)
+        receipts = list(posted_receipts_for_period(act.supplier_id, act.period_from, act.period_to))
+        return Response(_reconciliation_act_detail_payload(act, receipts, request))
+
+    @extend_schema(
+        request=SupplierReconciliationActUpdateSerializer,
+        responses=SupplierReconciliationActDetailSerializer,
+        summary='Акт сверки: обновить черновик',
+    )
+    def patch(self, request, pk):
+        try:
+            act = SupplierReconciliationAct.objects.select_related('supplier').get(pk=pk)
+        except SupplierReconciliationAct.DoesNotExist:
+            return Response({'detail': 'Не найден'}, status=status.HTTP_404_NOT_FOUND)
+        if act.status != ReconciliationActStatus.DRAFT:
+            return Response({'detail': 'Изменение возможно только для черновика.'}, status=status.HTTP_400_BAD_REQUEST)
+        serializer = SupplierReconciliationActUpdateSerializer(data=request.data, partial=True)
+        if not serializer.is_valid():
+            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+        v = serializer.validated_data
+        for field in ('period_from', 'period_to', 'opening_balance', 'notes'):
+            if field in v:
+                setattr(act, field, v[field])
+        preview = build_reconciliation_preview(
+            act.supplier,
+            period_from=act.period_from,
+            period_to=act.period_to,
+            opening_balance=act.opening_balance,
+        )
+        act.receipts_total = preview['receipts_total']
+        act.receipts_count = preview['receipts_count']
+        act.closing_balance = preview['closing_balance']
+        act.save(
+            update_fields=[
+                'period_from', 'period_to', 'opening_balance', 'notes',
+                'receipts_total', 'receipts_count', 'closing_balance', 'updated_at',
+            ],
+        )
+        return Response(_reconciliation_act_detail_payload(act, preview['receipts'], request))
+
+    @extend_schema(summary='Акт сверки: удалить черновик')
+    def delete(self, request, pk):
+        try:
+            act = SupplierReconciliationAct.objects.get(pk=pk)
+        except SupplierReconciliationAct.DoesNotExist:
+            return Response({'detail': 'Не найден'}, status=status.HTTP_404_NOT_FOUND)
+        if act.status != ReconciliationActStatus.DRAFT:
+            return Response({'detail': 'Удаление возможно только для черновика.'}, status=status.HTTP_400_BAD_REQUEST)
+        act.delete()
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+@extend_schema(
+    tags=['Инвентаризация / Акт сверки'],
+    summary='Акт сверки: подтвердить',
+    description='Фиксирует акт: пересчитывает суммы по **проведённым** приходам за период и блокирует редактирование.',
+)
+class ReconciliationActConfirmView(AdminOnlyMixin, APIView):
+    def post(self, request, pk):
+        try:
+            act = SupplierReconciliationAct.objects.select_related('supplier').get(pk=pk)
+        except SupplierReconciliationAct.DoesNotExist:
+            return Response({'detail': 'Не найден'}, status=status.HTTP_404_NOT_FOUND)
+        try:
+            with transaction.atomic():
+                act = confirm_reconciliation_act(act, confirmed_by=request.user)
+        except ReconciliationError as exc:
+            return Response({'detail': exc.message, 'code': exc.code}, status=status.HTTP_400_BAD_REQUEST)
+        receipts = list(posted_receipts_for_period(act.supplier_id, act.period_from, act.period_to))
+        return Response(_reconciliation_act_detail_payload(act, receipts, request))
 

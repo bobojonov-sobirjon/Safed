@@ -15,10 +15,22 @@ class VerifyOTPSerializer(serializers.Serializer):
 
 class UserListSerializer(serializers.ModelSerializer):
     groups = serializers.SerializerMethodField()
+    cashback_balance = serializers.DecimalField(max_digits=14, decimal_places=2, read_only=True)
+    loyalty_points = serializers.IntegerField(read_only=True)
 
     class Meta:
         model = CustomUser
-        fields = ['id', 'first_name', 'last_name', 'phone', 'is_active', 'groups', 'created_at']
+        fields = [
+            'id',
+            'first_name',
+            'last_name',
+            'phone',
+            'is_active',
+            'groups',
+            'loyalty_points',
+            'cashback_balance',
+            'created_at',
+        ]
 
     def get_groups(self, obj):
         return list(obj.groups.values_list('name', flat=True))

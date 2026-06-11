@@ -1,6 +1,6 @@
 # Safed — Mobile API Documentation (v1)
 
-Production-ready reference for **mobile frontend** developers.
+Production-ready reference for **mobile frontend** developers (Customer app, Staff/Admin app, Courier app).
 
 ---
 
@@ -8,19 +8,23 @@ Production-ready reference for **mobile frontend** developers.
 
 1. [General Info](#1-general-info)
 2. [Authentication (JWT)](#2-authentication-jwt)
-3. [Product API — What's New](#3-product-api--whats-new)
-4. [Order System — Full Flow by Role](#4-order-system--full-flow-by-role)
-5. [Push Notifications & FCM Devices](#5-push-notifications--fcm-devices)
-6. [WebSocket Protocols](#6-websocket-protocols)
-7. [Accounts & Profile](#7-accounts--profile)
-8. [Categories](#8-categories)
-9. [Checkout & Addresses](#9-checkout--addresses)
-10. [Orders — All REST Endpoints](#10-orders--all-rest-endpoints)
-11. [Chat (REST)](#11-chat-rest)
-12. [Notifications (REST)](#12-notifications-rest)
-13. [News](#13-news)
-14. [Enums & Constants](#14-enums--constants)
-15. [Error Handling](#15-error-handling)
+3. [Accounts & Profile](#3-accounts--profile)
+4. [FCM Devices](#4-fcm-devices)
+5. [Products](#5-products)
+6. [Categories](#6-categories)
+7. [Checkout, Orders & Delivery](#7-checkout-orders--delivery)
+8. [Cashback & Loyalty](#8-cashback--loyalty)
+9. [Chat (REST)](#9-chat-rest)
+10. [Notifications (REST)](#10-notifications-rest)
+11. [News](#11-news)
+12. [Admin — Fees, Zones, Cashback](#12-admin--fees-zones-cashback)
+13. [Admin — Inventory (Warehouse)](#13-admin--inventory-warehouse)
+14. [Admin — Staff & Users](#14-admin--staff--users)
+15. [Admin — Statistics](#15-admin--statistics)
+16. [WebSocket Protocols](#16-websocket-protocols)
+17. [Enums & Constants](#17-enums--constants)
+18. [Error Handling](#18-error-handling)
+19. [Complete Endpoint Index](#19-complete-endpoint-index)
 
 ---
 
@@ -29,50 +33,66 @@ Production-ready reference for **mobile frontend** developers.
 | Field | Value |
 |-------|-------|
 | **Project** | Safed |
-| **Framework** | Django + Django REST Framework |
+| **Framework** | Django 5 + Django REST Framework (DRF) |
 | **API version** | `v1` |
-| **Content-Type** | `application/json` (except product/admin image uploads: `multipart/form-data`) |
-| **Authentication** | JWT Bearer token |
+| **Content-Type** | `application/json` (except product/category/news image uploads: `multipart/form-data`) |
+| **Authentication** | JWT Bearer token (`rest_framework_simplejwt`) |
 | **Swagger UI** | `{BASE}/docs/` |
 | **ReDoc** | `{BASE}/redoc/` |
+| **OpenAPI schema** | `{BASE}/schema/` |
 
 ### Base URLs
 
 | Environment | REST Base | WebSocket Base |
 |-------------|-----------|----------------|
 | **Production** | `https://apies.firepole.ru/api/v1/` | `wss://apies.firepole.ru/` |
-| **Staging** | *(deploy URL)* `/api/v1/` | `wss://{host}/` |
+| **Staging** | `https://{staging-host}/api/v1/` | `wss://{staging-host}/` |
 | **Local dev** | `http://127.0.0.1:8000/api/v1/` | `ws://127.0.0.1:8000/` |
 
 ### Authorization Header
 
-All protected endpoints require:
+All protected endpoints:
 
 ```
 Authorization: Bearer <access_token>
+Content-Type: application/json
 ```
 
 ### JWT Token Lifetime
 
-- **Access token:** 7 days
-- **Refresh token:** 7 days (issued on login; `ROTATE_REFRESH_TOKENS = true`)
-- **Note:** There is currently **no** `/auth/token/refresh/` endpoint exposed. Re-login when access expires.
+| Token | Lifetime |
+|-------|----------|
+| **Access** | 7 days |
+| **Refresh** | 7 days (`ROTATE_REFRESH_TOKENS = true`) |
+
+> **Note:** There is currently **no** exposed `/auth/token/refresh/` endpoint. Re-login when access expires.
 
 ### User Roles (Groups)
 
-| Group | Mobile app |
-|-------|------------|
-| `User` | Customer app |
-| `Operator` | Staff app — order processing |
-| `Super Admin` | Staff app — full access + stats |
-| `Admin` | Staff app — admin operations |
+| Group | App |
+|-------|-----|
+| `User` | Customer mobile app |
+| `Operator` | Staff app — order processing, barcode restock |
+| `Super Admin` | Staff/Admin app — full access + stats |
+| `Admin` | Staff/Admin app — admin + inventory |
 | `Courier` | Courier app — delivery |
+
+### Pagination
+
+Many list endpoints support:
+
+| Param | Type | Default | Max |
+|-------|------|---------|-----|
+| `limit` | integer | varies | usually `200` |
+| `offset` | integer | `0` | — |
+
+DRF `LimitOffsetPagination` is used on products; some endpoints return `{ count, limit, offset, results }`.
 
 ---
 
 ## 2. Authentication (JWT)
 
-### 2.1 Customer Login — Step 1: Send OTP
+### 2.1 Customer — Step 1: Send OTP
 
 | | |
 |---|---|
@@ -80,11 +100,11 @@ Authorization: Bearer <access_token>
 | **URL** | `/api/v1/auth/login/` |
 | **Auth** | None (public) |
 
-**Request body:**
+**Body parameters:**
 
-| Field | Type | Required | Description |
-|-------|------|----------|-------------|
-| `phone` | string | **yes** | Phone number, e.g. `"998901234567"` |
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| `phone` | string | **yes** | — | Phone number, e.g. `"998901234567"` |
 
 **Example request:**
 ```json
@@ -93,18 +113,23 @@ Authorization: Bearer <access_token>
 }
 ```
 
-**Success response `200`:**
+**Success `200`:**
 ```json
 {
   "message": "СМС код отправлен"
 }
 ```
 
-**DEBUG mode:** OTP code may be returned in response when SMS fails.
+**DEBUG mode:** if SMS fails, response may include `"code": "123456"` for testing.
+
+**Errors `400`:**
+```json
+{ "phone": ["Обязательное поле."] }
+```
 
 ---
 
-### 2.2 Customer Login — Step 2: Verify OTP → JWT
+### 2.2 Customer — Step 2: Verify OTP → JWT
 
 | | |
 |---|---|
@@ -112,12 +137,12 @@ Authorization: Bearer <access_token>
 | **URL** | `/api/v1/auth/verify-otp/` |
 | **Auth** | None (public) |
 
-**Request body:**
+**Body parameters:**
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
 | `phone` | string | **yes** | Same phone as step 1 |
-| `code` | string | **yes** | 6-digit OTP code |
+| `code` | string | **yes** | 6-digit OTP |
 
 **Example request:**
 ```json
@@ -127,7 +152,7 @@ Authorization: Bearer <access_token>
 }
 ```
 
-**Success response `200`:**
+**Success `200`:**
 ```json
 {
   "access": "eyJ0eXAiOiJKV1QiLCJhbGc...",
@@ -139,17 +164,26 @@ Authorization: Bearer <access_token>
     "phone": "998901234567",
     "is_active": true,
     "groups": ["User"],
+    "loyalty_points": 0,
+    "cashback_balance": "0.00",
     "created_at": "2026-01-15T10:00:00Z"
   }
 }
 ```
 
-**Errors:**
-- `400` — invalid or expired code: `{ "detail": "Неверный код" }` / `{ "detail": "Код истёк" }`
+**Errors `400`:**
+```json
+{ "detail": "Неверный код" }
+```
+```json
+{ "detail": "Код истёк" }
+```
+
+> OTP expires in **2 minutes**, max **3** attempts.
 
 ---
 
-### 2.3 Staff Login (Operator / Super Admin / Admin / Courier)
+### 2.3 Staff Login (Admin / Operator / Courier / Super Admin)
 
 | | |
 |---|---|
@@ -157,7 +191,7 @@ Authorization: Bearer <access_token>
 | **URL** | `/api/v1/auth/admin-login/` |
 | **Auth** | None (public) |
 
-**Request body:**
+**Body parameters:**
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
@@ -172,7 +206,7 @@ Authorization: Bearer <access_token>
 }
 ```
 
-**Success response `200`:**
+**Success `200`:**
 ```json
 {
   "access": "eyJ0eXAiOiJKV1QiLCJhbGc...",
@@ -184,17 +218,21 @@ Authorization: Bearer <access_token>
     "phone": "998901111111",
     "is_active": true,
     "groups": ["Operator"],
+    "loyalty_points": 0,
+    "cashback_balance": "0.00",
     "created_at": "2026-01-01T08:00:00Z"
   }
 }
 ```
 
-**Errors:**
-- `401` — `{ "detail": "Неверные данные" }`
+**Errors `401`:**
+```json
+{ "detail": "Неверные данные" }
+```
 
 ---
 
-### 2.4 Staff Update Own Credentials
+### 2.4 Staff — Update Own Credentials
 
 | | |
 |---|---|
@@ -202,7 +240,7 @@ Authorization: Bearer <access_token>
 | **URL** | `/api/v1/auth/admin/update/` |
 | **Auth** | JWT required |
 
-**Request body (all optional):**
+**Body parameters (all optional):**
 
 | Field | Type | Required |
 |-------|------|----------|
@@ -211,51 +249,121 @@ Authorization: Bearer <access_token>
 
 ---
 
-## 3. Product API — What's New
+## 3. Accounts & Profile
 
-Recent changes to the **Products** model and mobile-facing APIs.
+### 3.1 My Profile
 
-### 3.1 New / Updated Model Fields
+| | |
+|---|---|
+| **Method** | `GET` |
+| **URL** | `/api/v1/users/me/` |
+| **Auth** | JWT |
 
-| Field | Type | Description |
-|-------|------|-------------|
-| `product_unit` | string enum | Price unit: `piece`, `kg`, `gram`, `liter`, `ml` |
-| `unit_amount` | decimal | Base volume for price (e.g. `1` kg, `500` ml). Price formula: `(qty / unit_amount) × price` |
-| `shelf_location` | string | Warehouse shelf code, e.g. `"A-32"` (for staff/picking) |
-| `size_label` | string (computed) | Human-readable size in API response, e.g. `"1 kg"`, `"500 ml"` |
-| `is_favourite` | boolean (computed) | `true` if product is in user's favorites (when JWT present) |
-| `sale_unit` | string | Legacy internal field (`piece` / `weight`); auto-synced — **do not send from mobile** |
+**Response `200`:**
+```json
+{
+  "id": 1,
+  "first_name": "Ali",
+  "last_name": "Karimov",
+  "phone": "998901234567",
+  "is_active": true,
+  "groups": ["User"],
+  "loyalty_points": 150,
+  "cashback_balance": "12500.00",
+  "created_at": "2026-01-15T10:00:00Z"
+}
+```
 
-### 3.2 New Endpoint: Product Unit Options
+### 3.2 Update Profile
+
+| | |
+|---|---|
+| **Method** | `PUT` |
+| **URL** | `/api/v1/users/me/update/` |
+| **Auth** | JWT |
+
+| Field | Type | Required |
+|-------|------|----------|
+| `first_name` | string | no |
+| `last_name` | string | no |
+
+### 3.3 Change Password (Customer)
+
+**Step 1 — Send OTP:**
+
+| | |
+|---|---|
+| **Method** | `PUT` |
+| **URL** | `/api/v1/users/me/password/send-code/` |
+| **Auth** | JWT |
+
+**Step 2 — Change password:**
+
+| | |
+|---|---|
+| **Method** | `PATCH` |
+| **URL** | `/api/v1/users/me/password/` |
+| **Auth** | JWT |
+
+| Field | Type | Required |
+|-------|------|----------|
+| `code` | string | **yes** |
+| `password` | string | **yes** |
+
+---
+
+## 4. FCM Devices
+
+Register after login to receive push notifications.
+
+| Method | URL | Auth | Description |
+|--------|-----|------|-------------|
+| `GET` | `/devices/` | JWT | List my devices |
+| `POST` | `/devices/` | JWT | Register device |
+| `PUT` | `/devices/` | JWT | Upsert device |
+| `PATCH` | `/devices/` | JWT | Deactivate device |
+
+**POST/PUT body:**
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `device_token` | string | **yes** | FCM token |
+| `device_type` | string | **yes** | `android`, `ios`, `web` |
+
+**PATCH body:**
+
+| Field | Type | Required |
+|-------|------|----------|
+| `device_token` | string | **yes** |
+| `is_active` | boolean | no |
+
+**Response `200/201`:**
+```json
+{
+  "id": 1,
+  "device_token": "fcm_token_here",
+  "device_type": "android",
+  "is_active": true,
+  "created_at": "2026-01-01T00:00:00Z",
+  "updated_at": "2026-01-01T00:00:00Z"
+}
+```
+
+---
+
+## 5. Products
+
+### 5.1 Product Unit Options
 
 | | |
 |---|---|
 | **Method** | `GET` |
 | **URL** | `/api/v1/products/unit-options/` |
-| **Auth** | None (public) |
+| **Auth** | None |
 
-Returns metadata for each unit type — use before building cart UI.
+Returns metadata for cart UI (`piece`, `kg`, `gram`, `liter`, `ml`).
 
-**Response `200` (array):**
-```json
-[
-  {
-    "value": "kg",
-    "label": "кг",
-    "label_uz": "kg",
-    "family": "weight",
-    "unit_amount_default": "1",
-    "unit_amount_hint": "...",
-    "price_hint": "...",
-    "stock_quantity_hint": "...",
-    "order_quantity_hint": "...",
-    "cart_units_allowed": ["kg", "gram"],
-    "example": "..."
-  }
-]
-```
-
-### 3.3 Product List
+### 5.2 Product List
 
 | | |
 |---|---|
@@ -267,14 +375,16 @@ Returns metadata for each unit type — use before building cart UI.
 
 | Param | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
-| `q` | string | no | — | Search by name |
-| `category` | integer | no | — | Filter by category ID |
+| `q` | string | no | — | Search across **all languages** (uz, ru, en): name, description, composition, barcode, unique_id |
+| `category` | integer | no | — | Filter by category ID (includes descendants) |
 | `is_active` | boolean | no | — | Filter active products |
-| `lang` | string | no | `ru` | Translation language: `ru`, `uz`, `en` |
-| `limit` | integer | no | DRF default | Pagination limit |
-| `offset` | integer | no | `0` | Pagination offset |
+| `is_discount` | boolean | no | — | Filter discounted products |
+| `limit` | integer | no | DRF default | Pagination |
+| `offset` | integer | no | `0` | Pagination |
 
-**Response item fields:**
+> **Multilingual search:** App language can be `uz`, but user can search in Russian (`Яблоко`) — product will still be found.
+
+**Response item (abbreviated):**
 ```json
 {
   "id": 42,
@@ -283,8 +393,8 @@ Returns metadata for each unit type — use before building cart UI.
     "uz": { ... },
     "en": { ... }
   },
-  "badge": { "id": 1, "translations": {...} },
-  "unit": { "id": 1, "translations": {...} },
+  "badge": { "id": 1, "name": { "ru": { "name": "..." }, "uz": { ... } } },
+  "unit": { "id": 1, "name": { ... } },
   "shelf_location": "A-32",
   "quantity": "100.000",
   "price": "25000.00",
@@ -292,11 +402,10 @@ Returns metadata for each unit type — use before building cart UI.
   "discount_percentage": null,
   "is_discount": false,
   "is_active": true,
-  "sale_unit": "weight",
   "product_unit": "kg",
   "unit_amount": "1.000",
   "size_label": "1 kg",
-  "category": { "id": 3, "translations": {...}, "children": [...] },
+  "category": { "id": 3, "name": { "ru": "...", "uz": "..." }, "children": [] },
   "barcodes": [{ "id": 1, "barcode": "4601234567890", "is_active": true }],
   "images": [{ "id": 1, "image": "https://apies.firepole.ru/media/...", "is_active": true }],
   "is_favourite": false,
@@ -305,7 +414,7 @@ Returns metadata for each unit type — use before building cart UI.
 }
 ```
 
-### 3.4 Product Detail
+### 5.3 Product Detail
 
 | | |
 |---|---|
@@ -313,27 +422,26 @@ Returns metadata for each unit type — use before building cart UI.
 | **URL** | `/api/v1/products/{id}/` |
 | **Auth** | Optional |
 
-Same response shape as list item.
+Same shape as list item.
 
-### 3.5 Favorites (Saved Products)
+### 5.4 Favorites (Saved Products)
 
 | Method | URL | Auth | Body |
 |--------|-----|------|------|
-| `GET` | `/api/v1/saved/` | JWT | — |
-| `POST` | `/api/v1/saved/` | JWT | `{ "product_id": 42 }` |
-| `DELETE` | `/api/v1/saved/{product_id}/` | JWT | — |
+| `GET` | `/saved/` | JWT | — |
+| `POST` | `/saved/` | JWT | `{ "product_id": 42 }` |
+| `DELETE` | `/saved/{product_id}/` | JWT | — |
 
-### 3.6 Cart Line Format (used in checkout)
+### 5.5 Cart Line Format (checkout)
 
-When adding products to order, each line in `products_data[]`:
+Each item in `products_data[]`:
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
-| `product_id` | integer | **yes** | Product ID from `GET /products/` |
-| `quantity` | decimal | **yes** | Min `0.001`. Integer for `piece`; decimal for kg/liter |
-| `product_unit` | string | no | Override unit: `piece`, `kg`, `gram`, `liter`, `ml`. Default = product's `product_unit` |
+| `product_id` | integer | **yes** | Product ID |
+| `quantity` | decimal/string | **yes** | Min `0.001`. Integer for `piece`; decimal for kg/liter |
+| `product_unit` | string | no | `piece`, `kg`, `gram`, `liter`, `ml`. Default = product's `product_unit` |
 
-**Example:**
 ```json
 {
   "products_data": [
@@ -343,11 +451,40 @@ When adding products to order, each line in `products_data[]`:
 }
 ```
 
+### 5.6 Admin Product CRUD (Staff)
+
+| Method | URL | Auth | Content-Type |
+|--------|-----|------|--------------|
+| `POST` | `/products/` | JWT | `multipart/form-data` |
+| `PUT` | `/products/{id}/` | JWT | `multipart/form-data` |
+| `DELETE` | `/products/{id}/` | JWT | — |
+| `POST` | `/products/{id}/barcodes/generate/` | JWT | JSON |
+| `PATCH` | `/product-barcodes/{id}/` | JWT | JSON |
+| `PATCH` | `/product-images/{id}/` | JWT | `multipart/form-data` |
+
+Product create requires `translations` (JSON string in FormData), `category`, `price`, `product_unit`, `unit_amount`.
+
 ---
 
-## 4. Order System — Full Flow by Role
+## 6. Categories
 
-### 4.1 Order Statuses
+| Method | URL | Auth | Description |
+|--------|-----|------|-------------|
+| `GET` | `/categories/home/` | Public | Home screen categories |
+| `GET` | `/categories/` | Public | Full tree |
+| `GET` | `/categories/{id}/` | Public | Detail |
+| `POST` | `/categories/` | JWT (Admin) | Create root (`multipart/form-data`) |
+| `POST` | `/categories/child/` | JWT (Admin) | Create child |
+| `PUT` | `/categories/{id}/` | JWT (Admin) | Update |
+| `DELETE` | `/categories/{id}/` | JWT (Admin) | Soft delete |
+
+**List query params:** `parent`, `category`, `name`, `is_active`
+
+---
+
+## 7. Checkout, Orders & Delivery
+
+### 7.1 Order Status Flow
 
 ```
 created → confirmed → picking → shipped → delivered → completed
@@ -359,99 +496,138 @@ created → confirmed → picking → shipped → delivered → completed
 
 | Status | Meaning |
 |--------|---------|
-| `created` | Order placed, awaiting payment/confirmation |
-| `confirmed` | Accepted by staff (card: after Click paid; cash: immediately) |
-| `picking` | Warehouse picking in progress |
-| `shipped` | Courier assigned, on the way |
-| `delivered` | Courier at customer address |
-| `completed` | **Cash only:** after courier QR confirm. Card orders finish at `delivered`+paid |
+| `created` | Placed, awaiting payment/confirmation |
+| `confirmed` | Accepted by staff |
+| `picking` | Warehouse picking |
+| `shipped` | Courier on the way |
+| `delivered` | At customer address |
+| `completed` | Cash: after QR confirm. Card: effectively done at `delivered`+paid |
 | `rejected` | Rejected by staff |
 | `cancelled` | Cancelled by customer |
 
-### 4.2 Payment Types
+### 7.2 Payment Types
 
 | Type | Flow |
 |------|------|
-| `card` | Create order → Click payment → auto `confirmed`+`paid` → staff processing → `delivered` deducts stock |
-| `cash` | Create order → staff notified immediately → `delivered` by courier → QR confirm → `completed`+`paid` |
+| `card` | Create → Click payment → auto `confirmed`+`paid` → staff → `delivered` |
+| `cash` | Create → staff notified → `delivered` → QR confirm → `completed`+`paid` |
 
 ---
 
-### 4.3 CUSTOMER Flow (User app)
+### 7.3 Pricing Preview
 
-```
-┌─────────────────────────────────────────────────────────────────┐
-│ 1. POST /checkout/pricing-preview/     → see total              │
-│ 2. GET  /checkout/delivery-slots/      → pick time slot         │
-│ 3. POST /orders/                       → create order           │
-│ 4a. CARD: POST /orders/{id}/click-payment/ → open payment_url   │
-│ 4b. CASH: wait for staff confirmation                           │
-│ 5. Track: GET /orders/my/  or  GET /orders/{id}/                │
-│ 6. Cancel (created only): POST /orders/{id}/cancel/             │
-│ 7. CASH at delivery:                                            │
-│    - Show QR: GET /orders/{id}/cash-qr-image/                   │
-│    - After courier confirms: POST /orders/{id}/delivery-response/│
-└─────────────────────────────────────────────────────────────────┘
-```
+| | |
+|---|---|
+| **Method** | `POST` |
+| **URL** | `/api/v1/checkout/pricing-preview/` |
+| **Auth** | JWT |
 
-#### Step-by-step
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| `products_data` | array | **yes** | — | Cart lines (min 1) |
+| `delivery_date` | date | no | — | `YYYY-MM-DD` (all 3 delivery fields together) |
+| `delivery_time_start` | string | no | — | `"HH:MM"` |
+| `delivery_time_end` | string | no | — | `"HH:MM"` |
+| `loyalty_points_to_use` | integer | no | `0` | Max 50% of base, capped by balance |
 
-**1. Pricing preview**
-```
-POST /api/v1/checkout/pricing-preview/
-Authorization: Bearer <token>
-```
-Body:
+**Response includes:** `products_subtotal`, `service_fee_amount`, `delivery_fee`, `packing_fee`, `buffer_amount`, `estimated_total`, `can_checkout`, `loyalty_points_applied`, `loyalty_discount_amount`, `loyalty_max_money`.
+
+---
+
+### 7.4 Delivery Slots
+
+| | |
+|---|---|
+| **Method** | `GET` |
+| **URL** | `/api/v1/checkout/delivery-slots/` |
+| **Auth** | JWT |
+
+**Query (one of):**
+
+| Param | Type | Description |
+|-------|------|-------------|
+| `relative` | string | `today` (default) or `tomorrow` |
+| `date` | string | `YYYY-MM-DD` |
+
+**Alias:** `GET /api/v1/busy-slots/` — same endpoint.
+
+**Admin POST** (Admin/Super Admin only): configure working hours for a day.
+
+---
+
+### 7.5 Delivery Zone Check
+
+Before checkout, verify address is in delivery zone.
+
+| | |
+|---|---|
+| **Method** | `GET` |
+| **URL** | `/api/v1/checkout/delivery-zone/check/` |
+| **Auth** | JWT |
+
+| Param | Type | Required |
+|-------|------|----------|
+| `lat` | decimal | **yes** |
+| `long` | decimal | **yes** |
+
+**Response `200`:**
 ```json
 {
-  "products_data": [
-    { "product_id": 42, "quantity": "2" }
-  ],
-  "delivery_date": "2026-05-20",
-  "delivery_time_start": "10:00",
-  "delivery_time_end": "11:00",
-  "loyalty_points_to_use": 0
+  "allowed": true,
+  "message": "",
+  "nearest_zone_id": 1,
+  "distance_m": 1250.5
 }
 ```
 
-**2. Delivery slots**
-```
-GET /api/v1/checkout/delivery-slots/?relative=today
-GET /api/v1/checkout/delivery-slots/?date=2026-05-20
-```
+If no active zones configured → `allowed: true` always.
 
-**3. Create order**
-```
-POST /api/v1/orders/
-```
-Body:
-```json
-{
-  "products_data": [
-    { "product_id": 42, "quantity": "2", "product_unit": "piece" }
-  ],
-  "delivery_address_id": 3,
-  "delivery_date": "2026-05-20",
-  "delivery_time_start": "10:00",
-  "delivery_time_end": "11:00",
-  "payment_type": "card",
-  "loyalty_points_to_use": 0,
-  "leave_at_door": false,
-  "comment": "Call before arrival",
-  "entrance": "2",
-  "apartment": "15"
-}
-```
+---
+
+### 7.6 Saved Addresses
+
+| Method | URL | Auth |
+|--------|-----|------|
+| `GET` | `/addresses/` | JWT |
+| `POST` | `/addresses/` | JWT |
+| `GET` | `/addresses/{id}/` | JWT |
+| `PATCH` | `/addresses/{id}/` | JWT |
+| `DELETE` | `/addresses/{id}/` | JWT |
+
+**Create body:**
+
+| Field | Type | Required |
+|-------|------|----------|
+| `street` | string | **yes** |
+| `house_number` | string | no |
+| `apartment` | string | no |
+| `entrance` | string | no |
+| `floor` | string | no |
+| `intercom_code` | string | no |
+| `lat` | decimal | no |
+| `long` | decimal | no |
+| `label` | string | no |
+| `is_default` | boolean | no |
+
+---
+
+### 7.7 Create Order
+
+| | |
+|---|---|
+| **Method** | `POST` |
+| **URL** | `/api/v1/orders/` |
+| **Auth** | JWT |
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
-| `products_data` | array | **yes** | Min 1 item (see cart line format) |
+| `products_data` | array | **yes** | Min 1 cart line |
 | `payment_type` | string | **yes** | `card` or `cash` |
-| `delivery_address_id` | integer | conditional | Saved address ID. **OR** provide `lat`+`long`+`address` |
+| `delivery_address_id` | integer | conditional | Saved address ID **OR** `lat`+`long`+`address` |
 | `lat` | decimal | conditional | Latitude |
 | `long` | decimal | conditional | Longitude |
 | `address` | string | conditional | Address text |
-| `delivery_date` | date | optional | `YYYY-MM-DD` — all 3 delivery fields together |
+| `delivery_date` | date | optional | All 3 delivery fields together |
 | `delivery_time_start` | string | optional | `"HH:MM"` |
 | `delivery_time_end` | string | optional | `"HH:MM"` |
 | `loyalty_points_to_use` | integer | no | Default `0` |
@@ -460,12 +636,40 @@ Body:
 | `entrance` | string | no | Max 50 |
 | `apartment` | string | no | Max 50 |
 
-**4a. Card payment**
+**Zone validation:** If active delivery zones exist, address must be within radius → else `400`.
+
+**Example:**
+```json
+{
+  "products_data": [
+    { "product_id": 42, "quantity": "2", "product_unit": "piece" }
+  ],
+  "delivery_address_id": 3,
+  "delivery_date": "2026-06-20",
+  "delivery_time_start": "10:00",
+  "delivery_time_end": "11:00",
+  "payment_type": "card",
+  "loyalty_points_to_use": 0,
+  "leave_at_door": false,
+  "comment": "Call before arrival"
+}
 ```
-POST /api/v1/orders/{id}/click-payment/
-Body: { "return_url": "safed://payment-result" }  // optional
-```
-Response:
+
+---
+
+### 7.8 Card Payment (CLICK)
+
+| | |
+|---|---|
+| **Method** | `POST` |
+| **URL** | `/api/v1/orders/{id}/click-payment/` |
+| **Auth** | JWT |
+
+| Field | Type | Required |
+|-------|------|----------|
+| `return_url` | string | no |
+
+**Response:**
 ```json
 {
   "order_id": 8,
@@ -475,82 +679,50 @@ Response:
 }
 ```
 
-**4b. Cash:** Staff gets notification immediately. Customer waits for status updates.
+---
 
-**5. My orders**
-```
-GET /api/v1/orders/my/
-GET /api/v1/orders/my/?status=shipped
-```
+### 7.9 Customer Order Actions
 
-Extra fields for cash (owner only, pending payment):
-- `cash_qr_code` — token string for QR generation
-- `cash_qr_image_url` — URL to `GET /orders/{id}/cash-qr-image/`
+| Method | URL | Description |
+|--------|-----|-------------|
+| `GET` | `/orders/my/` | My orders (`?status=shipped`) |
+| `GET` | `/orders/{id}/` | Order detail |
+| `PUT` | `/orders/{id}/` | Update (`created` only) |
+| `DELETE` | `/orders/{id}/` | Delete (`created` only) |
+| `GET` | `/orders/cancel-reasons/` | Cancel reasons list |
+| `POST` | `/orders/{id}/cancel/` | Cancel (`created` only) |
+| `GET` | `/orders/{id}/cash-qr-image/` | Cash QR PNG |
+| `POST` | `/orders/{id}/delivery-response/` | Accept/reject delivery |
 
-**6. Cancel order** (only `status=created`)
-```
-POST /api/v1/orders/{id}/cancel/
-Body: {
-  "reason_ids": [1, 2],
-  "comment": "Changed my mind"
-}
-```
+**Cancel body:**
 
-**7. Cash delivery — customer side**
+| Field | Type | Required |
+|-------|------|----------|
+| `reason_ids` | integer[] | no |
+| `comment` | string | no |
 
-After courier marks `delivered`, customer shows QR:
-```
-GET /api/v1/orders/{id}/cash-qr-image/
-→ Returns PNG image
-```
+At least one of `reason_ids` (non-empty) or `comment` (non-empty) required.
 
-After courier scans QR (`courier_confirmed_cash_payment` WS event), customer confirms receipt:
-```
-POST /api/v1/orders/{id}/delivery-response/
-Body: { "accepted": true }
-```
-- `accepted: true` — received order
-- `accepted: false` — problem with delivery
+**Delivery response body:**
 
-Alternative via WebSocket (see §6.3).
-
-#### Customer Notifications (push + WS)
-
-| Event | `type` | When |
-|-------|--------|------|
-| Status change | `order_status` | confirmed, picking, shipped, etc. |
-| Courier at address | `order_delivered` | status → delivered |
-| Click paid | `order_click_paid` | card payment success |
-| Cash confirmed | `order_cash_confirmed` | courier QR confirm |
-| Courier assigned | `order_courier_assigned` | courier added |
-| Picking scan | `order_picking_scan` | barcode scanned |
-| Picking line update | `order_picking_line` | qty adjusted |
-| Operator handling | `order_handling` | operator took order |
-| Chat message | `chat_message` | new chat message |
+| Field | Type | Required |
+|-------|------|----------|
+| `accepted` | boolean | **yes** |
 
 ---
 
-### 4.4 OPERATOR / SUPER ADMIN Flow (Staff app)
+### 7.10 Staff Order Actions
 
-```
-┌─────────────────────────────────────────────────────────────────┐
-│ 1. GET  /orders/active/              → active orders list       │
-│ 2. GET  /orders/all/                 → all orders (+ filters)   │
-│ 3. GET  /orders/{id}/                → order detail             │
-│ 4. PATCH /orders/{id}/status/        → change status            │
-│ 5. POST  /orders/{id}/add-courier/   → assign courier           │
-│ 6. PATCH /orders/{id}/picking-lines/{line_id}/ → adjust qty     │
-│ 7. POST  /orders/{id}/picking/scan/  → scan barcode             │
-│ 8. GET  /notifications/staff/        → staff notifications      │
-└─────────────────────────────────────────────────────────────────┘
-```
+| Method | URL | Role | Description |
+|--------|-----|------|-------------|
+| `GET` | `/orders/all/` | Staff | All orders |
+| `GET` | `/orders/active/` | Staff | Active orders |
+| `PATCH` | `/orders/{id}/status/` | Staff/Courier | Change status |
+| `POST` | `/orders/{id}/add-courier/` | Staff | Assign courier |
+| `PATCH` | `/orders/{id}/picking-lines/{line_id}/` | Staff | Adjust picking qty |
+| `POST` | `/orders/{id}/picking/scan/` | Staff | Barcode scan |
 
-#### Status transitions (staff)
-
-```
-PATCH /api/v1/orders/{id}/status/
-Body: { "status": "confirmed" }
-```
+**Status transitions:**
 
 | From | Allowed to |
 |------|------------|
@@ -559,169 +731,66 @@ Body: { "status": "confirmed" }
 | `picking` | `shipped`, `rejected`, `cancelled` |
 | `shipped` | `delivered`, `rejected` |
 | `delivered` | *(none via status API)* |
-| `completed` | *(only via cash QR confirm — see courier)* |
+| `completed` | *(only via cash QR confirm)* |
 
-**Important:** `PATCH status` with `"completed"` returns `400` — use cash QR flow.
+**Add courier body:** `{ "courier_id": 12 }` — order must be `picking` → auto `shipped`.
 
-#### Assign courier (at picking → auto shipped)
+**Picking scan body:** `{ "barcode": "4601234567890" }`
 
-```
-POST /api/v1/orders/{id}/add-courier/
-Body: { "courier_id": 12 }
-```
-
-- Order must be in `picking` status
-- Transitions to `shipped`
-- Courier gets push (`courier_assigned`) + customer notified
-
-#### Picking
-
-```
-PATCH /api/v1/orders/{id}/picking-lines/{line_id}/
-Body: { "quantity": "1.250" }
-
-POST /api/v1/orders/{id}/picking/scan/
-Body: { "barcode": "4601234567890" }
-```
-
-`line_id` = `OrderProduct.id` (NOT `product_id`).
-
-#### Staff Notifications
-
-| Event | `type` | When |
-|-------|--------|------|
-| New cash order | `staff_new_order` | cash order created |
-| New card order | `staff_new_order` | after Click paid |
-| Customer cancelled | `staff_order_cancelled` | customer cancel |
-| Delivery response | `staff_customer_delivery_response` | customer accept/reject after cash |
-
-**Card orders:** Staff is NOT notified at create — only after Click payment completes.
+**Picking line body:** `{ "quantity": "1.250" }` — `line_id` = `OrderProduct.id`.
 
 ---
 
-### 4.5 COURIER Flow (Courier app)
+### 7.11 Courier Actions
 
-```
-┌─────────────────────────────────────────────────────────────────┐
-│ 1. GET  /orders/courier/my/          → assigned orders          │
-│ 2. GET  /orders/{id}/                → order detail             │
-│ 3. PATCH /orders/{id}/status/        → mark delivered           │
-│ 4. PATCH /orders/cash/confirm/         → scan customer QR         │
-│ 5. GET  /notifications/courier/      → courier notifications    │
-└─────────────────────────────────────────────────────────────────┘
-```
+| Method | URL | Description |
+|--------|-----|-------------|
+| `GET` | `/orders/courier/my/` | My orders (`?status=shipped`) |
+| `PATCH` | `/orders/{id}/status/` | Mark `delivered` |
+| `PATCH` | `/orders/cash/confirm/` | Cash QR confirm |
 
-#### My orders
-```
-GET /api/v1/orders/courier/my/
-GET /api/v1/orders/courier/my/?status=shipped
-```
+**Cash confirm body:**
 
-#### Mark delivered
-```
-PATCH /api/v1/orders/{id}/status/
-Body: { "status": "delivered" }
-```
-- Order must be `shipped`
-- Courier must be assigned to this order
+| Field | Type | Required |
+|-------|------|----------|
+| `order_id` | integer | **yes** |
+| `qr_code` | string | **yes** |
 
-#### Cash QR confirm (completes order)
-
-```
-PATCH /api/v1/orders/cash/confirm/
-Body: {
-  "order_id": 8,
-  "qr_code": "<cash_qr_code from customer app>"
-}
-```
-
-**Preconditions:**
-- `payment_type = cash`
-- `payment_status = pending`
-- `status = delivered`
-- Courier is assigned to order
-
-**Result:**
-- `payment_status` → `paid`
-- `status` → `completed`
-- Stock deducted
-- Customer gets WS event `courier_confirmed_cash_payment`
-- Customer gets push `order_cash_confirmed`
-
-#### Courier Notifications
-
-| Event | `type` | When |
-|-------|--------|------|
-| Order assigned | `courier_assigned` | POST add-courier |
-
-**Note:** Customer delivery accept/reject does NOT notify courier (only Operator/Super Admin).
+Result: `status` → `completed`, `payment_status` → `paid`, stock deducted, cashback accrued.
 
 ---
 
-### 4.6 Order Response Structure
-
-All order list/detail endpoints return:
+### 7.12 Order Response Structure
 
 ```json
 {
   "id": 8,
-  "user_data": { "id": 1, "phone": "998...", "first_name": "", "last_name": "", "is_active": true },
-  "comment": "...",
+  "user_data": { "id": 1, "phone": "998...", "first_name": "", "last_name": "" },
   "status": "shipped",
   "status_display": "Shipped",
   "can_user_cancel": false,
-  "cancellation": null,
   "order_pricing": {
-    "total_amount": "100000.00",
     "products_subtotal": "95000.00",
-    "buffer_amount": "0.00",
-    "service_fee_percent": "5.00",
     "service_fee_amount": "4750.00",
     "delivery_fee": "15000.00",
     "packing_fee": "2000.00",
     "estimated_total": "121750.00",
     "final_total": null,
-    "refund_amount": "0.00",
     "payment_type": "cash",
     "payment_status": "pending",
     "loyalty_points_used": 0,
-    "loyalty_discount_amount": "0.00",
-    "original_estimated_total": "121750.00",
-    "paid_amount": null,
-    "adjustment_balance": "0.00",
-    "settlement_type": "none",
-    "extra_payment_due": "0.00",
-    "baseline_amount": "121750.00",
-    "baseline_label": "estimated"
+    "loyalty_discount_amount": "0.00"
   },
   "delivery_slot": {
-    "date": "2026-05-20",
+    "date": "2026-06-20",
     "time_start": "10:00",
     "time_end": "11:00",
     "address": "...",
     "lat": "41.311081",
-    "long": "69.240562",
-    "entrance": "2",
-    "apartment": "15",
-    "leave_at_door": false
+    "long": "69.240562"
   },
-  "order_products": [
-    {
-      "id": 101,
-      "product_id": 42,
-      "product": { /* ProductListSerializer */ },
-      "ordered_quantity": "2.000",
-      "quantity": "2.000",
-      "product_unit": "piece",
-      "normalized_quantity": "2.000",
-      "unit_price": "25000.00",
-      "total_price": "50000.00",
-      "created_at": "..."
-    }
-  ],
-  "order_couriers": [
-    { "id": 1, "courier": { "id": 12, "phone": "...", "first_name": "...", "last_name": "..." }, "created_at": "..." }
-  ],
+  "order_products": [ /* lines */ ],
+  "order_couriers": [ /* couriers */ ],
   "cash_qr_code": null,
   "cash_qr_image_url": null,
   "created_at": "...",
@@ -729,353 +798,95 @@ All order list/detail endpoints return:
 }
 ```
 
-`cash_qr_code` / `cash_qr_image_url` only in `GET /orders/my/` for cash+pending owner.
-
 ---
 
-## 5. Push Notifications & FCM Devices
+## 8. Cashback & Loyalty
 
-Register device token after login to receive FCM push.
+### 8.1 Loyalty Points (spend at checkout)
 
-### Register / Update Device
+- User field: `loyalty_points` (integer)
+- Spend via `loyalty_points_to_use` in order/preview
+- Max discount: **50%** of pre-loyalty total
+- Refunded on customer cancel
 
-| Method | URL | Body |
-|--------|-----|------|
-| `GET` | `/api/v1/devices/` | — |
-| `POST` | `/api/v1/devices/` | `{ "device_token": "...", "device_type": "android" }` |
-| `PUT` | `/api/v1/devices/` | `{ "device_token": "...", "device_type": "ios" }` |
-| `PATCH` | `/api/v1/devices/` | `{ "device_token": "...", "is_active": false }` |
+### 8.2 Cashback Balance (earn on completed orders)
 
-**`device_type` values:** `android`, `ios`, `web`
+| | |
+|---|---|
+| **Method** | `GET` |
+| **URL** | `/api/v1/users/me/cashback/` |
+| **Auth** | JWT |
 
-**POST response `201` / `200`:**
+**Response:**
 ```json
 {
-  "id": 1,
-  "device_token": "fcm_token_here",
-  "device_type": "android",
-  "is_active": true,
-  "created_at": "...",
-  "updated_at": "..."
+  "cashback_balance": "12500.00",
+  "cashback_percent": "5.00",
+  "cashback_active": true
 }
 ```
 
-Push is sent alongside WebSocket for order events. Always connect WS + register FCM for reliability.
+### 8.3 Cashback History
 
----
+| | |
+|---|---|
+| **Method** | `GET` |
+| **URL** | `/api/v1/users/me/cashback/history/` |
+| **Auth** | JWT |
 
-## 6. WebSocket Protocols
-
-Production WebSocket base: **`wss://apies.firepole.ru/`**
-
-JWT is passed **in the URL** (not header). Use the same `access` token from login.
-
-Run server with **Daphne** (ASGI) for WebSocket support.
-
----
-
-### 6.1 Notifications WS
-
-**URL:**
-```
-wss://apies.firepole.ru/ws/notifications/{access_token}/
-```
-
-**On connect — server sends unread list:**
+**Response:** array of transactions:
 ```json
-{
-  "type": "unread_list",
-  "items": [
-    {
-      "id": 55,
-      "title": "Заказ в пути",
-      "body": "Заказ передан курьеру...",
-      "type": "order_status",
-      "data": { "order_id": 8, "event": "order_status", "status": "shipped" },
-      "is_read": false,
-      "created_at": "2026-05-19T10:00:00+05:00"
-    }
-  ]
-}
-```
-
-**New notification — server push:**
-```json
-{
-  "type": "notification",
-  "data": {
-    "id": 56,
-    "title": "...",
-    "body": "...",
-    "type": "staff_new_order",
-    "data": { "order_id": 9 },
-    "is_read": false,
-    "created_at": "..."
+[
+  {
+    "id": 1,
+    "order": 8,
+    "amount": "5000.00",
+    "transaction_type": "earned",
+    "balance_after": "12500.00",
+    "note": "Order #8",
+    "created_at": "2026-06-11T10:00:00Z"
   }
-}
+]
 ```
 
-**Close codes:**
-- `4001` — not authenticated (invalid/expired JWT)
+Cashback is accrued when order completes (cash QR confirm or card `delivered`).
 
 ---
 
-### 6.2 Chat WS
-
-**URL:**
-```
-wss://apies.firepole.ru/ws/chat/{room_id}/{access_token}/
-```
-
-**On connect — history:**
-```json
-{
-  "type": "history",
-  "messages": [ /* last 100 messages */ ]
-}
-```
-
-**Send message (client → server):**
-```json
-{ "action": "message", "message": "Hello" }
-```
-
-**Receive message (server → client):**
-```json
-{
-  "type": "message",
-  "data": {
-    "id": 10,
-    "room_id": 3,
-    "sender": { "id": 1, "phone": "998...", "first_name": "", "last_name": "" },
-    "sender_type": "initiator",
-    "message": "Hello",
-    "is_read": false,
-    "created_at": "..."
-  }
-}
-```
-
-**Mark read:**
-```json
-{ "action": "read" }
-```
-
-**Typing indicator:**
-```json
-{ "action": "typing", "is_typing": true }
-```
-
-**Other events:** `type: "read"`, `type: "typing"`
-
-**Close codes:**
-- `4001` — not authenticated
-- `4003` — not allowed in this room
-
----
-
-### 6.3 Cash Delivery WS
-
-**URL (any of these):**
-```
-wss://apies.firepole.ru/ws/orders/delivery/{access_token}/
-wss://apies.firepole.ru/ws/orders/delivery/?token={access_token}
-wss://apies.firepole.ru/ws/orders/delivery/token={access_token}
-```
-
-**On connect:**
-```json
-{
-  "type": "connected",
-  "data": { "user_id": 1, "is_courier": false }
-}
-```
-
-**Server → customer (after courier QR confirm):**
-```json
-{
-  "type": "courier_confirmed_cash_payment",
-  "data": {
-    "order_id": 8,
-    "payment_status": "paid",
-    "status": "completed"
-  }
-}
-```
-
-**Customer accept/reject (client → server):**
-```json
-{ "action": "accept_delivery", "order_id": 8 }
-{ "action": "reject_delivery", "order_id": 8 }
-```
-
-**Ack response:**
-```json
-{
-  "type": "ack",
-  "data": { "order_id": 8, "accepted": true, "recorded_at": "..." }
-}
-```
-
-**Error:**
-```json
-{
-  "type": "error",
-  "data": { "message": "...", "code": "forbidden" }
-}
-```
-
-**Important:**
-- Customer delivery response notifies **Operator/Super Admin only** (via notifications WS), NOT courier
-- REST alternative: `POST /orders/{id}/delivery-response/`
-
----
-
-## 7. Accounts & Profile
-
-| Method | URL | Auth | Description |
-|--------|-----|------|-------------|
-| `GET` | `/users/me/` | JWT | Current user profile |
-| `PUT` | `/users/me/update/` | JWT | Update `first_name`, `last_name` |
-| `PUT` | `/users/me/password/send-code/` | JWT | Send OTP for password change |
-| `PATCH` | `/users/me/password/` | JWT | Change password with OTP |
-
-**Profile update body:**
-```json
-{ "first_name": "Ali", "last_name": "Karimov" }
-```
-
----
-
-## 8. Categories
-
-| Method | URL | Auth | Description |
-|--------|-----|------|-------------|
-| `GET` | `/categories/home/` | Public | Home screen categories (ordered) |
-| `GET` | `/categories/` | Public | Full category tree |
-| `GET` | `/categories/{id}/` | Public | Category detail |
-
-**Query for list:** `parent`, `category`, `name`, `lang`
-
----
-
-## 9. Checkout & Addresses
-
-| Method | URL | Auth | Description |
-|--------|-----|------|-------------|
-| `POST` | `/checkout/pricing-preview/` | JWT | Cart price preview |
-| `GET` | `/checkout/delivery-slots/` | JWT | Available delivery slots |
-| `GET` | `/addresses/` | JWT | Saved addresses |
-| `POST` | `/addresses/` | JWT | Create address |
-| `GET` | `/addresses/{id}/` | JWT | Address detail |
-| `PATCH` | `/addresses/{id}/` | JWT | Update address |
-| `DELETE` | `/addresses/{id}/` | JWT | Delete address |
-
-**Delivery slots query:**
-
-| Param | Type | Description |
-|-------|------|-------------|
-| `relative` | string | `today` or `tomorrow` |
-| `date` | string | `YYYY-MM-DD` |
-
-**Create address body:**
-```json
-{
-  "lat": "41.311081",
-  "long": "69.240562",
-  "address": "Tashkent, Yunusabad",
-  "entrance": "2",
-  "apartment": "15",
-  "comment": "Landmark near park"
-}
-```
-
----
-
-## 10. Orders — All REST Endpoints
-
-| Method | URL | Role | Description |
-|--------|-----|------|-------------|
-| `POST` | `/checkout/pricing-preview/` | Customer | Price preview |
-| `GET` | `/checkout/delivery-slots/` | Customer | Delivery slots |
-| `GET` | `/addresses/` | Customer | Addresses list |
-| `POST` | `/addresses/` | Customer | Create address |
-| `GET` | `/addresses/{id}/` | Customer | Address detail |
-| `PATCH` | `/addresses/{id}/` | Customer | Update address |
-| `DELETE` | `/addresses/{id}/` | Customer | Delete address |
-| `POST` | `/orders/` | Customer | Create order |
-| `GET` | `/orders/my/` | Customer | My orders |
-| `GET` | `/orders/{id}/` | Customer/Staff | Order detail |
-| `PUT` | `/orders/{id}/` | Customer | Update order (`created` only) |
-| `DELETE` | `/orders/{id}/` | Customer | Delete order (`created` only) |
-| `GET` | `/orders/cancel-reasons/` | Customer | Cancel reasons list |
-| `POST` | `/orders/{id}/cancel/` | Customer | Cancel order |
-| `POST` | `/orders/{id}/click-payment/` | Customer | Get Click payment URL |
-| `GET` | `/orders/{id}/cash-qr-image/` | Customer | Cash QR PNG |
-| `POST` | `/orders/{id}/delivery-response/` | Customer | Accept/reject delivery |
-| `GET` | `/orders/all/` | Staff | All orders |
-| `GET` | `/orders/active/` | Staff | Active orders |
-| `PATCH` | `/orders/{id}/status/` | Staff/Courier | Change status |
-| `POST` | `/orders/{id}/add-courier/` | Staff | Assign courier |
-| `PATCH` | `/orders/{id}/picking-lines/{line_id}/` | Staff | Update picking line |
-| `POST` | `/orders/{id}/picking/scan/` | Staff | Barcode scan |
-| `GET` | `/orders/courier/my/` | Courier | Courier orders |
-| `PATCH` | `/orders/cash/confirm/` | Courier | Cash QR confirm |
-| `GET` | `/admin/fees/settings/` | Admin | Fee settings |
-| `PATCH` | `/admin/fees/settings/` | Admin | Update fees |
-| `GET` | `/admin/fees/delivery-rules/` | Admin | Delivery fee rules |
-| `POST` | `/admin/fees/delivery-rules/` | Admin | Create rule |
-| `PATCH` | `/admin/fees/delivery-rules/{id}/` | Admin | Update rule |
-| `DELETE` | `/admin/fees/delivery-rules/{id}/` | Admin | Delete rule |
-| `GET` | `/overview/` | Super Admin | Stats overview |
-
-**Min order amount:** configurable via admin fees (default **1000 UZS** subtotal).
-
----
-
-## 11. Chat (REST)
+## 9. Chat (REST)
 
 | Method | URL | Auth | Description |
 |--------|-----|------|-------------|
 | `GET` | `/chat/rooms/` | JWT | My chat rooms |
-| `POST` | `/chat/rooms/` | JWT | Create room `{ "order_id": 8 }` |
-| `GET` | `/chat/rooms/{id}/` | JWT | Room detail + messages |
+| `POST` | `/chat/rooms/` | JWT | Create `{ "order_id": 8 }` |
+| `GET` | `/chat/rooms/{id}/` | JWT | Room detail |
 | `DELETE` | `/chat/rooms/{id}/` | JWT | Close room |
 | `GET` | `/chat/orders/{order_id}/` | JWT | Room by order |
 | `GET` | `/chat/rooms/{room_id}/messages/` | JWT | Message history |
-| `PATCH` | `/chat/rooms/{room_id}/read/` | JWT | Mark messages read |
+| `PATCH` | `/chat/rooms/{room_id}/read/` | JWT | Mark read |
 
-**Send messages via WebSocket only** (not REST POST).
+> Send messages via **WebSocket only** (not REST POST).
 
 ---
 
-## 12. Notifications (REST)
+## 10. Notifications (REST)
 
-| Method | URL | Role | Description |
-|--------|-----|------|-------------|
-| `GET` | `/notifications/` | All | Auto-filter by JWT role |
-| `GET` | `/notifications/customer/` | Customer | `order_*`, `chat_*` |
-| `GET` | `/notifications/staff/` | Operator/SA | `staff_*`, `chat_*` |
-| `GET` | `/notifications/courier/` | Courier | `courier_*` |
-| `GET` | `/notifications/unread/` | All | Unread only |
-| `PATCH` | `/notifications/{id}/read/` | All | Mark one read → `204` |
-| `PATCH` | `/notifications/read-all/` | All | Mark all read |
+| Method | URL | Role |
+|--------|-----|------|
+| `GET` | `/notifications/` | Auto by role |
+| `GET` | `/notifications/customer/` | Customer |
+| `GET` | `/notifications/staff/` | Operator/SA |
+| `GET` | `/notifications/courier/` | Courier |
+| `GET` | `/notifications/unread/` | All |
+| `PATCH` | `/notifications/{id}/read/` | All → `204` |
+| `PATCH` | `/notifications/read-all/` | All |
 
-**Query params (list endpoints):**
+**Query params:** `is_read`, `type`, `limit` (max 100), `offset`, `audience`
 
-| Param | Type | Default | Description |
-|-------|------|---------|-------------|
-| `is_read` | boolean | — | Filter read/unread |
-| `type` | string | — | e.g. `staff_new_order`, `order_delivered` |
-| `limit` | integer | `50` | Max `100` |
-| `offset` | integer | `0` | Pagination |
-| `audience` | string | auto | For `/unread/`: `customer`, `staff`, `courier` |
-
-**Response format:**
+**Response:**
 ```json
 {
   "audience": "customer",
-  "role": "User",
   "unread_count": 2,
   "count": 15,
   "limit": 50,
@@ -1096,16 +907,288 @@ wss://apies.firepole.ru/ws/orders/delivery/token={access_token}
 
 ---
 
-## 13. News
+## 11. News
 
 | Method | URL | Auth | Description |
 |--------|-----|------|-------------|
 | `GET` | `/posts/` | Public | News feed |
 | `GET` | `/posts/{id}/` | Public | Post detail |
+| `POST` | `/posts/create/` | JWT (Admin) | Create post |
+| `PUT` | `/posts/{id}/update/` | JWT (Admin) | Update |
+| `DELETE` | `/posts/{id}/delete/` | JWT (Admin) | Delete |
 
 ---
 
-## 14. Enums & Constants
+## 12. Admin — Fees, Zones, Cashback
+
+**Role:** `Admin` or `Super Admin`
+
+### 12.1 Fee Settings (singleton)
+
+| Method | URL |
+|--------|-----|
+| `GET` | `/admin/fees/settings/` |
+| `PATCH` | `/admin/fees/settings/` |
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `service_fee_percent` | decimal | Service fee % on products subtotal |
+| `packing_fee_amount` | decimal | Fixed packing fee |
+| `min_order_subtotal` | decimal | Min order amount (default 1000 UZS) |
+| `weight_buffer_percent` | decimal | Weight buffer % |
+| `loyalty_point_currency_value` | decimal | UZS per 1 loyalty point |
+| `hourly_delivery_capacity` | integer | Max orders per hour slot |
+
+### 12.2 Delivery Fee Rules
+
+| Method | URL |
+|--------|-----|
+| `GET` | `/admin/fees/delivery-rules/` |
+| `POST` | `/admin/fees/delivery-rules/` |
+| `PATCH` | `/admin/fees/delivery-rules/{id}/` |
+| `DELETE` | `/admin/fees/delivery-rules/{id}/` |
+
+| Field | Type | Required |
+|-------|------|----------|
+| `min_order_amount` | decimal | **yes** |
+| `max_order_amount` | decimal | no |
+| `fee_amount` | decimal | **yes** |
+| `is_active` | boolean | no |
+
+### 12.3 Delivery Zones
+
+| Method | URL |
+|--------|-----|
+| `GET` | `/admin/delivery-zones/` |
+| `POST` | `/admin/delivery-zones/` |
+| `PATCH` | `/admin/delivery-zones/{id}/` |
+| `DELETE` | `/admin/delivery-zones/{id}/` |
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `name` | string | no | Zone label |
+| `address` | string | **yes** | Center address text |
+| `lat` | decimal | **yes** | Center latitude |
+| `long` | decimal | **yes** | Center longitude |
+| `radius_m` | integer | **yes** | Radius in meters |
+| `is_active` | boolean | no | Default `true` |
+
+### 12.4 Cashback Settings (singleton)
+
+| Method | URL |
+|--------|-----|
+| `GET` | `/admin/cashback/settings/` |
+| `PATCH` | `/admin/cashback/settings/` |
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `cashback_percent` | decimal | % of order total |
+| `is_active` | boolean | Enable/disable accrual |
+
+### 12.5 Cashback Transactions (admin)
+
+| Method | URL |
+|--------|-----|
+| `GET` | `/admin/cashback/transactions/?user_id=` |
+
+---
+
+## 13. Admin — Inventory (Warehouse)
+
+**Role:** `Admin` or `Super Admin` (except barcode restock: `Operator` or `Super Admin`)
+
+### 13.1 Suppliers (Поставщики)
+
+| Method | URL | Description |
+|--------|-----|-------------|
+| `GET` | `/inventory/suppliers/` | List (`?is_active=`, `?q=`, `?limit=`, `?offset=`) |
+| `POST` | `/inventory/suppliers/` | Create |
+| `GET` | `/inventory/suppliers/{id}/` | Detail |
+| `PATCH` | `/inventory/suppliers/{id}/` | Update |
+| `DELETE` | `/inventory/suppliers/{id}/` | Soft delete (`is_active=false`) |
+
+**Create/Update body:**
+
+| Field | Type | Required | Default |
+|-------|------|----------|---------|
+| `name` | string | **yes** | — |
+| `phone` | string | no | `""` |
+| `contact_person` | string | no | `""` |
+| `inn` | string | no | `""` |
+| `address` | string | no | `""` |
+| `is_active` | boolean | no | `true` |
+
+### 13.2 Supplier Statement (Акт сверки — quick report)
+
+| | |
+|---|---|
+| **Method** | `GET` |
+| **URL** | `/api/v1/inventory/suppliers/{id}/statement/` |
+
+| Param | Type | Default | Description |
+|-------|------|---------|-------------|
+| `date_from` | date | — | `YYYY-MM-DD` |
+| `date_to` | date | — | `YYYY-MM-DD` |
+| `status` | string | `posted` | `draft`, `posted`, `cancelled`, `all` |
+| `opening_balance` | decimal | `0` | Opening debt to supplier |
+
+**Response:**
+```json
+{
+  "supplier": { /* Supplier */ },
+  "date_from": "2026-06-01",
+  "date_to": "2026-06-30",
+  "status_filter": "posted",
+  "opening_balance": "5000.00",
+  "total_receipts": 3,
+  "total_amount": "240000.00",
+  "closing_balance": "245000.00",
+  "receipts": [ /* StockReceipt[] */ ]
+}
+```
+
+### 13.3 Stock Receipts (Приход)
+
+**Workflow:** Draft header → Add items → Post → stock increases
+
+| Method | URL | Description |
+|--------|-----|-------------|
+| `GET` | `/inventory/receipts/` | List (`?status=`, `?supplier=`, `?date_from=`, `?date_to=`) |
+| `POST` | `/inventory/receipts/` | Create draft |
+| `GET` | `/inventory/receipts/{id}/` | Detail + items |
+| `PATCH` | `/inventory/receipts/{id}/` | Update header (draft only) |
+| `POST` | `/inventory/receipts/{id}/post/` | Post → increase stock |
+| `POST` | `/inventory/receipts/{id}/cancel/` | Cancel (reverses stock if posted) |
+
+**Create draft body:**
+
+| Field | Type | Required |
+|-------|------|----------|
+| `supplier_id` | integer | **yes** |
+| `doc_number` | string | **yes** (unique) |
+| `doc_date` | date | **yes** |
+
+**Receipt item (POST/PATCH `/inventory/receipts/{id}/items/`):**
+
+| Field | Type | Required |
+|-------|------|----------|
+| `product_id` | integer | **yes** |
+| `quantity` | integer | **yes** (min 1) |
+| `purchase_price` | decimal | **yes** |
+| `sell_price` | decimal | no* |
+| `margin_percent` | decimal | no* |
+
+\* One of `sell_price` or `margin_percent` required.
+
+**On post:** `Products.quantity` increases, `Products.price` updated from `sell_price`.
+
+### 13.4 Reconciliation Acts (formal акт сверки)
+
+| Method | URL | Description |
+|--------|-----|-------------|
+| `GET` | `/inventory/reconciliation-acts/` | List |
+| `POST` | `/inventory/reconciliation-acts/` | Create draft |
+| `GET` | `/inventory/reconciliation-acts/{id}/` | Detail + receipts |
+| `PATCH` | `/inventory/reconciliation-acts/{id}/` | Update draft |
+| `DELETE` | `/inventory/reconciliation-acts/{id}/` | Delete draft |
+| `POST` | `/inventory/reconciliation-acts/{id}/confirm/` | Confirm & lock |
+
+**Create body:**
+
+| Field | Type | Required | Default |
+|-------|------|----------|---------|
+| `supplier_id` | integer | **yes** | — |
+| `period_from` | date | **yes** | — |
+| `period_to` | date | **yes** | — |
+| `opening_balance` | decimal | no | `0.00` |
+| `notes` | string | no | `""` |
+
+### 13.5 Barcode Tools
+
+| Method | URL | Role | Description |
+|--------|-----|------|-------------|
+| `GET` | `/inventory/products/by-barcode/?barcode=` | Admin | Lookup product |
+| `POST` | `/inventory/products/restock/` | Operator/SA | Quick restock |
+
+**Restock body:** `{ "barcode": "...", "quantity": 50 }`
+
+---
+
+## 14. Admin — Staff & Users
+
+| Method | URL | Role | Description |
+|--------|-----|------|-------------|
+| `POST` | `/staff/create/` | Super Admin | Create Admin/Operator/Courier |
+| `GET` | `/users/group/users/` | Staff | All customers |
+| `GET` | `/staff/admins/` | Staff | Admins list |
+| `GET` | `/staff/operators/` | Staff | Operators list |
+| `GET` | `/staff/couriers/` | Staff | Couriers list |
+| `GET` | `/users/{id}/` | Staff | User detail |
+| `PATCH` | `/users/{id}/update/` | Staff | Update user |
+| `DELETE` | `/users/{id}/delete/` | Staff | Delete/deactivate |
+| `PATCH` | `/users/{id}/password/` | Staff | Reset password |
+
+**Staff create body:**
+
+| Field | Type | Required |
+|-------|------|----------|
+| `phone` | string | **yes** |
+| `password` | string | **yes** |
+| `group` | string | **yes** | `Admin`, `Operator`, `Courier` |
+| `first_name` | string | no |
+| `last_name` | string | no |
+
+---
+
+## 15. Admin — Statistics
+
+**Role:** `Super Admin`
+
+| Method | URL | Description |
+|--------|-----|-------------|
+| `GET` | `/overview/` | Business overview stats |
+| `GET` | `/products/` | Product sales stats |
+
+**Query params:** `period` (`day`, `week`, `month`), `date_from`, `date_to`
+
+---
+
+## 16. WebSocket Protocols
+
+Production: `wss://apies.firepole.ru/`
+
+JWT passed **in URL** (not header).
+
+### 16.1 Notifications
+
+```
+wss://apies.firepole.ru/ws/notifications/{access_token}/
+```
+
+On connect → `type: "unread_list"`. New → `type: "notification"`. Close `4001` = invalid JWT.
+
+### 16.2 Chat
+
+```
+wss://apies.firepole.ru/ws/chat/{room_id}/{access_token}/
+```
+
+Send: `{ "action": "message", "message": "Hello" }`  
+Read: `{ "action": "read" }`  
+Typing: `{ "action": "typing", "is_typing": true }`
+
+### 16.3 Cash Delivery
+
+```
+wss://apies.firepole.ru/ws/orders/delivery/{access_token}/
+```
+
+Customer accept: `{ "action": "accept_delivery", "order_id": 8 }`  
+Server event: `type: "courier_confirmed_cash_payment"`
+
+---
+
+## 17. Enums & Constants
 
 ### OrderStatus
 `created`, `confirmed`, `picking`, `shipped`, `delivered`, `completed`, `rejected`, `cancelled`
@@ -1122,20 +1205,22 @@ wss://apies.firepole.ru/ws/orders/delivery/token={access_token}
 ### DeviceType
 `android`, `ios`, `web`
 
-### Language codes
-`ru`, `uz`, `en` — use `?lang=uz` or `Accept-Language: uz`
+### ReceiptStatus
+`draft`, `posted`, `cancelled`
+
+### ReconciliationActStatus
+`draft`, `confirmed`
+
+### Languages
+`ru`, `uz`, `en` — translations returned in all languages in `translations` object
 
 ---
 
-## 15. Error Handling
+## 18. Error Handling
 
-Standard DRF error format:
-
-**Validation error `400`:**
+**Validation `400`:**
 ```json
-{
-  "field_name": ["Error message"]
-}
+{ "field_name": ["Error message"] }
 ```
 
 **Permission `403`:**
@@ -1148,17 +1233,146 @@ Standard DRF error format:
 { "detail": "Не найден" }
 ```
 
-**Business logic error `400` (with code):**
+**Business logic `400` (with code):**
 ```json
 {
-  "detail": "Status completed faqat PATCH /orders/cash/confirm/ (QR) orqali.",
-  "code": "cash_use_qr_confirm"
+  "detail": "Адрес вне зоны доставки.",
+  "code": "outside_delivery_zone"
+}
+```
+
+**Insufficient stock `400`:**
+```json
+{
+  "detail": "Недостаточно товара на складе",
+  "insufficient_stock": [
+    { "product_id": 42, "requested": "5", "available": "2" }
+  ]
 }
 ```
 
 ---
 
-## Quick Reference — Production URLs
+## 19. Complete Endpoint Index
+
+### Auth
+| Method | Path |
+|--------|------|
+| POST | `/auth/login/` |
+| POST | `/auth/verify-otp/` |
+| POST | `/auth/admin-login/` |
+| PUT | `/auth/admin/update/` |
+
+### Users & Devices
+| Method | Path |
+|--------|------|
+| GET | `/users/me/` |
+| PUT | `/users/me/update/` |
+| PUT | `/users/me/password/send-code/` |
+| PATCH | `/users/me/password/` |
+| GET | `/users/me/cashback/` |
+| GET | `/users/me/cashback/history/` |
+| GET/POST/PUT/PATCH | `/devices/` |
+| POST | `/staff/create/` |
+| GET | `/users/group/users/` |
+| GET | `/staff/admins/` |
+| GET | `/staff/operators/` |
+| GET | `/staff/couriers/` |
+| GET/PATCH/DELETE | `/users/{id}/` |
+
+### Products
+| Method | Path |
+|--------|------|
+| GET | `/products/unit-options/` |
+| GET/POST | `/products/` |
+| GET/PUT/DELETE | `/products/{id}/` |
+| POST | `/products/{id}/barcodes/generate/` |
+| GET/POST/DELETE | `/saved/` |
+| GET/PATCH | `/badges/`, `/units/`, `/product-barcodes/{id}/`, `/product-images/{id}/` |
+
+### Categories
+| Method | Path |
+|--------|------|
+| GET | `/categories/home/` |
+| GET/POST | `/categories/` |
+| POST | `/categories/child/` |
+| GET/PUT/DELETE | `/categories/{id}/` |
+
+### Orders & Checkout
+| Method | Path |
+|--------|------|
+| POST | `/checkout/pricing-preview/` |
+| GET/POST | `/checkout/delivery-slots/` |
+| GET | `/checkout/delivery-zone/check/` |
+| GET/POST | `/addresses/` |
+| GET/PATCH/DELETE | `/addresses/{id}/` |
+| POST | `/orders/` |
+| GET | `/orders/my/` |
+| GET/PUT/DELETE | `/orders/{id}/` |
+| GET | `/orders/cancel-reasons/` |
+| POST | `/orders/{id}/cancel/` |
+| POST | `/orders/{id}/click-payment/` |
+| GET | `/orders/{id}/cash-qr-image/` |
+| POST | `/orders/{id}/delivery-response/` |
+| GET | `/orders/all/`, `/orders/active/` |
+| PATCH | `/orders/{id}/status/` |
+| POST | `/orders/{id}/add-courier/` |
+| PATCH | `/orders/{id}/picking-lines/{line_id}/` |
+| POST | `/orders/{id}/picking/scan/` |
+| GET | `/orders/courier/my/` |
+| PATCH | `/orders/cash/confirm/` |
+
+### Admin Config
+| Method | Path |
+|--------|------|
+| GET/PATCH | `/admin/fees/settings/` |
+| GET/POST | `/admin/fees/delivery-rules/` |
+| PATCH/DELETE | `/admin/fees/delivery-rules/{id}/` |
+| GET/POST | `/admin/delivery-zones/` |
+| PATCH/DELETE | `/admin/delivery-zones/{id}/` |
+| GET/PATCH | `/admin/cashback/settings/` |
+| GET | `/admin/cashback/transactions/` |
+
+### Inventory
+| Method | Path |
+|--------|------|
+| GET/POST | `/inventory/suppliers/` |
+| GET/PATCH/DELETE | `/inventory/suppliers/{id}/` |
+| GET | `/inventory/suppliers/{id}/statement/` |
+| GET/POST | `/inventory/receipts/` |
+| GET/PATCH | `/inventory/receipts/{id}/` |
+| POST | `/inventory/receipts/{id}/post/` |
+| POST | `/inventory/receipts/{id}/cancel/` |
+| GET/POST | `/inventory/receipts/{id}/items/` |
+| PATCH/DELETE | `/inventory/receipts/{id}/items/{item_id}/` |
+| GET/POST/PATCH/DELETE | `/inventory/reconciliation-acts/` |
+| POST | `/inventory/reconciliation-acts/{id}/confirm/` |
+| GET | `/inventory/products/by-barcode/` |
+| POST | `/inventory/products/restock/` |
+
+### Chat & Notifications
+| Method | Path |
+|--------|------|
+| GET/POST | `/chat/rooms/` |
+| GET/DELETE | `/chat/rooms/{id}/` |
+| GET | `/chat/orders/{order_id}/` |
+| GET | `/chat/rooms/{room_id}/messages/` |
+| PATCH | `/chat/rooms/{room_id}/read/` |
+| GET | `/notifications/` |
+| GET | `/notifications/customer/`, `/staff/`, `/courier/` |
+| GET | `/notifications/unread/` |
+| PATCH | `/notifications/{id}/read/`, `/notifications/read-all/` |
+
+### News & Stats
+| Method | Path |
+|--------|------|
+| GET | `/posts/`, `/posts/{id}/` |
+| POST/PUT/DELETE | `/posts/create/`, `/posts/{id}/update/`, `/posts/{id}/delete/` |
+| GET | `/overview/`, `/products/` (stats) |
+
+---
+
+## Quick Reference — Production
 
 ```
 REST:  https://apies.firepole.ru/api/v1/
@@ -1170,4 +1384,4 @@ Docs:  https://apies.firepole.ru/docs/
 
 ---
 
-*Generated for Safed mobile team. API version: v1.*
+*Safed Mobile API v1 — last updated: June 2026*

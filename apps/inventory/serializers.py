@@ -5,7 +5,14 @@ from typing import Optional, List, Dict, Any
 
 from rest_framework import serializers
 
-from .models import Supplier, StockReceipt, StockReceiptItem, ReceiptStatus
+from .models import (
+    Supplier,
+    StockReceipt,
+    StockReceiptItem,
+    ReceiptStatus,
+    SupplierReconciliationAct,
+    ReconciliationActStatus,
+)
 from apps.products.models import Products, ProductBarcode
 from apps.products.serializers import ProductListSerializer
 
@@ -17,6 +24,14 @@ class SupplierSerializer(serializers.ModelSerializer):
     class Meta:
         model = Supplier
         fields = ['id', 'name', 'phone', 'contact_person', 'inn', 'address', 'is_active', 'created_at', 'updated_at']
+        extra_kwargs = {
+            'name': {'help_text': 'Название / ФИО поставщика.'},
+            'phone': {'help_text': 'Телефон.'},
+            'contact_person': {'help_text': 'Контактное лицо.'},
+            'inn': {'help_text': 'ИНН / STIR.'},
+            'address': {'help_text': 'Юридический или фактический адрес.'},
+            'is_active': {'help_text': 'false — мягкое удаление, нельзя выбрать в новом приходе.'},
+        }
 
 
 class ReceiptItemSerializer(serializers.ModelSerializer):
@@ -46,24 +61,26 @@ class StockReceiptSerializer(serializers.ModelSerializer):
         fields = [
             'id', 'supplier', 'supplier_data',
             'doc_number', 'doc_date', 'status',
-            'subtotal', 'created_by', 'created_at', 'updated_at',
+            'subtotal', 'created_by', 'posted_by', 'posted_at',
+            'cancelled_by', 'cancelled_at',
+            'created_at', 'updated_at',
             'items',
+        ]
+        read_only_fields = [
+            'id', 'subtotal', 'created_by', 'posted_by', 'posted_at',
+            'cancelled_by', 'cancelled_at', 'created_at', 'updated_at', 'items',
         ]
 
 
-class StockReceiptHeaderUpdateSerializer(serializers.Serializer):
-    supplier = serializers.PrimaryKeyRelatedField(
-        queryset=Supplier.objects.all(),
-        required=False,
-        help_text='ID поставщика.',
-    )
-    doc_number = serializers.CharField(required=False, max_length=50, help_text='Номер документа.')
-    doc_date = serializers.DateField(required=False, help_text='Дата документа.')
-    status = serializers.ChoiceField(
-        choices=ReceiptStatus.choices,
-        required=False,
-        help_text='Статус документа. Обновление шапки через API допускается только для черновика (`draft`).',
-    )
+class StockReceiptHeaderUpdateSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = StockReceipt
+        fields = ['supplier', 'doc_number', 'doc_date']
+
+    def validate_supplier(self, value):
+        if not value.is_active:
+            raise serializers.ValidationError('Поставщик неактивен.')
+        return value
 
 
 class StockReceiptCreateSerializer(serializers.Serializer):
@@ -142,6 +159,99 @@ class BarcodeLookupSerializer(serializers.Serializer):
         help_text='Штрихкод для поиска товара.',
         error_messages=_REQUIRED,
     )
+
+
+class SupplierStatementSerializer(serializers.Serializer):
+    supplier = SupplierSerializer()
+    date_from = serializers.DateField(allow_null=True)
+    date_to = serializers.DateField(allow_null=True)
+    status_filter = serializers.CharField()
+    opening_balance = serializers.CharField()
+    total_receipts = serializers.IntegerField()
+    total_amount = serializers.CharField()
+    closing_balance = serializers.CharField()
+    receipts = StockReceiptSerializer(many=True)
+
+
+class SupplierReconciliationActSerializer(serializers.ModelSerializer):
+    supplier_data = SupplierSerializer(source='supplier', read_only=True)
+
+    class Meta:
+        model = SupplierReconciliationAct
+        fields = [
+            'id',
+            'supplier',
+            'supplier_data',
+            'period_from',
+            'period_to',
+            'opening_balance',
+            'receipts_total',
+            'receipts_count',
+            'closing_balance',
+            'status',
+            'notes',
+            'created_by',
+            'confirmed_by',
+            'confirmed_at',
+            'created_at',
+            'updated_at',
+        ]
+        read_only_fields = [
+            'id',
+            'receipts_total',
+            'receipts_count',
+            'closing_balance',
+            'status',
+            'confirmed_by',
+            'confirmed_at',
+            'created_at',
+            'updated_at',
+        ]
+
+
+class SupplierReconciliationActCreateSerializer(serializers.Serializer):
+    supplier_id = serializers.IntegerField(required=True, error_messages=_REQUIRED)
+    period_from = serializers.DateField(required=True, error_messages=_REQUIRED)
+    period_to = serializers.DateField(required=True, error_messages=_REQUIRED)
+    opening_balance = serializers.DecimalField(
+        required=False,
+        max_digits=14,
+        decimal_places=2,
+        default=Decimal('0.00'),
+        help_text='Долг поставщику на начало периода.',
+    )
+    notes = serializers.CharField(required=False, allow_blank=True, default='')
+
+    def validate_supplier_id(self, value):
+        if not Supplier.objects.filter(pk=value, is_active=True).exists():
+            raise serializers.ValidationError('Поставщик не найден или неактивен.')
+        return value
+
+    def validate(self, attrs):
+        if attrs['period_to'] < attrs['period_from']:
+            raise serializers.ValidationError({'period_to': 'Должно быть не раньше period_from.'})
+        return attrs
+
+
+class SupplierReconciliationActUpdateSerializer(serializers.Serializer):
+    period_from = serializers.DateField(required=False)
+    period_to = serializers.DateField(required=False)
+    opening_balance = serializers.DecimalField(required=False, max_digits=14, decimal_places=2)
+    notes = serializers.CharField(required=False, allow_blank=True)
+
+    def validate(self, attrs):
+        period_from = attrs.get('period_from')
+        period_to = attrs.get('period_to')
+        if period_from and period_to and period_to < period_from:
+            raise serializers.ValidationError({'period_to': 'Должно быть не раньше period_from.'})
+        return attrs
+
+
+class SupplierReconciliationActDetailSerializer(SupplierReconciliationActSerializer):
+    receipts = StockReceiptSerializer(many=True, read_only=True)
+
+    class Meta(SupplierReconciliationActSerializer.Meta):
+        fields = SupplierReconciliationActSerializer.Meta.fields + ['receipts']
 
 
 class ProductRestockSerializer(serializers.Serializer):

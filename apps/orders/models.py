@@ -241,6 +241,12 @@ class Order(models.Model):
         default=Decimal('0.00'),
         verbose_name='Скидка баллами',
     )
+    cashback_earned = models.DecimalField(
+        max_digits=14,
+        decimal_places=2,
+        default=Decimal('0.00'),
+        verbose_name='Начисленный cashback',
+    )
     leave_at_door = models.BooleanField(
         default=False,
         verbose_name='Оставить у двери',
@@ -719,6 +725,105 @@ class ClickPayment(models.Model):
 
     def __str__(self) -> str:
         return f'ClickPayment #{self.pk} order={self.order_id} {self.state}'
+
+
+class DeliveryZone(models.Model):
+    """Yetkazish zonasi: markaz (lat/long) va radius (metr)."""
+
+    name = models.CharField(max_length=255, blank=True, default='', verbose_name='Название')
+    address = models.TextField(verbose_name='Адрес / описание')
+    lat = models.DecimalField(
+        max_digits=GEO_COORD_MAX_DIGITS,
+        decimal_places=GEO_COORD_DECIMAL_PLACES,
+        verbose_name='Широта (центр)',
+    )
+    long = models.DecimalField(
+        max_digits=GEO_COORD_MAX_DIGITS,
+        decimal_places=GEO_COORD_DECIMAL_PLACES,
+        verbose_name='Долгота (центр)',
+    )
+    radius_m = models.PositiveIntegerField(
+        verbose_name='Радиус (м)',
+        help_text='Buyurtma faqat shu radius ichida ochiladi.',
+    )
+    is_active = models.BooleanField(default=True, db_index=True, verbose_name='Активна')
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        verbose_name = 'Зона доставки'
+        verbose_name_plural = 'Зоны доставки'
+        ordering = ['-is_active', '-updated_at', 'id']
+        indexes = [models.Index(fields=['is_active', '-updated_at'])]
+
+    def __str__(self) -> str:
+        label = self.name or self.address[:40]
+        return f'{label} (r={self.radius_m}m)'
+
+
+class CashbackSettings(models.Model):
+    """Singleton: buyurtma summasidan cashback foizi."""
+
+    cashback_percent = models.DecimalField(
+        max_digits=5,
+        decimal_places=2,
+        default=Decimal('0.00'),
+        verbose_name='Cashback, %',
+    )
+    is_active = models.BooleanField(default=True, verbose_name='Активен')
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        verbose_name = 'Настройки cashback'
+        verbose_name_plural = 'Настройки cashback'
+
+    def __str__(self) -> str:
+        return f'Cashback {self.cashback_percent}%'
+
+
+class CashbackTransaction(models.Model):
+    """Cashback harakatlari tarixi."""
+
+    class Type(models.TextChoices):
+        EARNED = 'earned', 'Начисление'
+        REVERSED = 'reversed', 'Списание'
+
+    user = models.ForeignKey(
+        'accounts.CustomUser',
+        on_delete=models.CASCADE,
+        related_name='cashback_transactions',
+        verbose_name='Пользователь',
+    )
+    order = models.ForeignKey(
+        'orders.Order',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='cashback_transactions',
+        verbose_name='Заказ',
+    )
+    amount = models.DecimalField(max_digits=14, decimal_places=2, verbose_name='Сумма (UZS)')
+    transaction_type = models.CharField(max_length=20, choices=Type.choices, db_index=True)
+    balance_after = models.DecimalField(
+        max_digits=14,
+        decimal_places=2,
+        default=Decimal('0.00'),
+        verbose_name='Баланс после',
+    )
+    note = models.CharField(max_length=255, blank=True, default='')
+    created_at = models.DateTimeField(auto_now_add=True, db_index=True)
+
+    class Meta:
+        verbose_name = 'Cashback транзакция'
+        verbose_name_plural = 'Cashback транзакции'
+        ordering = ['-created_at', '-id']
+        indexes = [
+            models.Index(fields=['user', '-created_at']),
+            models.Index(fields=['order', 'transaction_type']),
+        ]
+
+    def __str__(self) -> str:
+        return f'Cashback #{self.pk} {self.transaction_type} {self.amount}'
 
 
 class ClickRefund(models.Model):

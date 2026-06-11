@@ -24,7 +24,17 @@ def _period_to_iso(p):
         return p.isoformat()
     return str(p)
 
-from .models import Order, OrderProduct, OrderCourier, DeliveryFeeRule, OrderFeeSettings, DeliveryAddress
+from .models import (
+    Order,
+    OrderProduct,
+    OrderCourier,
+    DeliveryFeeRule,
+    OrderFeeSettings,
+    DeliveryAddress,
+    DeliveryZone,
+    CashbackSettings,
+    CashbackTransaction,
+)
 from apps.products.models import Products
 from .serializers import (
     OrderListSerializer,
@@ -35,6 +45,9 @@ from .serializers import (
     StatusChangeSerializer,
     OrderFeeSettingsSerializer,
     DeliveryFeeRuleSerializer,
+    DeliveryZoneSerializer,
+    CashbackSettingsSerializer,
+    CashbackTransactionSerializer,
 )
 from apps.accounts.models import CustomUser
 from apps.core.enums import OrderStatus, UserGroup, PaymentStatus, PaymentType, ProductUnit
@@ -344,6 +357,9 @@ class OrderStatusChangeView(APIView):
                 from .pricing import compute_order_settlement
 
                 compute_order_settlement(order)
+                from apps.orders.services.cashback import accrue_order_cashback
+
+                accrue_order_cashback(order)
 
         order.save()
 
@@ -992,3 +1008,140 @@ class DeliveryFeeRuleDetailView(APIView):
             return Response({'detail': 'Не найден'}, status=status.HTTP_404_NOT_FOUND)
         obj.delete()
         return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+# =============================================================================
+# Admin API: Delivery zones
+# =============================================================================
+
+
+class DeliveryZoneListCreateView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    @extend_schema(
+        tags=[TAG_FEES],
+        summary='Zonalar доставки: список',
+        responses=DeliveryZoneSerializer(many=True),
+    )
+    def get(self, request):
+        denied = ensure_admin_or_super_admin(request)
+        if denied:
+            return denied
+        qs = DeliveryZone.objects.all().order_by('-is_active', '-updated_at', 'id')
+        return Response(DeliveryZoneSerializer(qs, many=True).data)
+
+    @extend_schema(
+        tags=[TAG_FEES],
+        summary='Zona доставки: создать',
+        request=DeliveryZoneSerializer,
+        responses=DeliveryZoneSerializer,
+    )
+    def post(self, request):
+        denied = ensure_admin_or_super_admin(request)
+        if denied:
+            return denied
+        serializer = DeliveryZoneSerializer(data=request.data)
+        if not serializer.is_valid():
+            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+        obj = serializer.save()
+        return Response(DeliveryZoneSerializer(obj).data, status=status.HTTP_201_CREATED)
+
+
+class DeliveryZoneDetailView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    @extend_schema(
+        tags=[TAG_FEES],
+        summary='Zona доставки: обновить',
+        request=DeliveryZoneSerializer,
+        responses=DeliveryZoneSerializer,
+    )
+    def patch(self, request, pk):
+        denied = ensure_admin_or_super_admin(request)
+        if denied:
+            return denied
+        try:
+            obj = DeliveryZone.objects.get(pk=pk)
+        except DeliveryZone.DoesNotExist:
+            return Response({'detail': 'Не найден'}, status=status.HTTP_404_NOT_FOUND)
+        serializer = DeliveryZoneSerializer(obj, data=request.data, partial=True)
+        if not serializer.is_valid():
+            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+        serializer.save()
+        return Response(serializer.data)
+
+    @extend_schema(
+        tags=[TAG_FEES],
+        summary='Zona доставки: удалить',
+        responses={204: OpenApiResponse(description='Zona удалена')},
+    )
+    def delete(self, request, pk):
+        denied = ensure_admin_or_super_admin(request)
+        if denied:
+            return denied
+        try:
+            obj = DeliveryZone.objects.get(pk=pk)
+        except DeliveryZone.DoesNotExist:
+            return Response({'detail': 'Не найден'}, status=status.HTTP_404_NOT_FOUND)
+        obj.delete()
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+# =============================================================================
+# Admin API: Cashback settings & history
+# =============================================================================
+
+
+class CashbackSettingsView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    @extend_schema(
+        tags=[TAG_FEES],
+        summary='Cashback sozlamalari: olish',
+        responses=CashbackSettingsSerializer,
+    )
+    def get(self, request):
+        denied = ensure_admin_or_super_admin(request)
+        if denied:
+            return denied
+        obj, _ = CashbackSettings.objects.get_or_create(pk=1)
+        return Response(CashbackSettingsSerializer(obj).data)
+
+    @extend_schema(
+        tags=[TAG_FEES],
+        summary='Cashback sozlamalari: yangilash',
+        request=CashbackSettingsSerializer,
+        responses=CashbackSettingsSerializer,
+    )
+    def patch(self, request):
+        denied = ensure_admin_or_super_admin(request)
+        if denied:
+            return denied
+        obj, _ = CashbackSettings.objects.get_or_create(pk=1)
+        serializer = CashbackSettingsSerializer(obj, data=request.data, partial=True)
+        if not serializer.is_valid():
+            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+        serializer.save()
+        return Response(serializer.data)
+
+
+class CashbackTransactionListView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    @extend_schema(
+        tags=[TAG_FEES],
+        summary='Cashback tranzaksiyalar (admin)',
+        parameters=[
+            OpenApiParameter('user_id', OpenApiTypes.INT, OpenApiParameter.QUERY, required=False),
+        ],
+        responses=CashbackTransactionSerializer(many=True),
+    )
+    def get(self, request):
+        denied = ensure_admin_or_super_admin(request)
+        if denied:
+            return denied
+        qs = CashbackTransaction.objects.select_related('order').order_by('-created_at', '-id')
+        user_id = request.query_params.get('user_id')
+        if user_id:
+            qs = qs.filter(user_id=user_id)
+        return Response(CashbackTransactionSerializer(qs[:200], many=True).data)
