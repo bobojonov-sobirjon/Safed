@@ -31,6 +31,12 @@ from .serializers import (
     UserDevicePatchSerializer,
 )
 from .services.eskiz import send_sms
+from .services.store_review import (
+    is_store_review_login,
+    is_store_review_phone,
+    store_review_credentials,
+    store_review_otp_code,
+)
 from .services.user_lifecycle import delete_or_deactivate_user
 
 
@@ -66,6 +72,41 @@ def get_tokens_for_user(user):
     }
 
 
+def _login_or_register_customer(phone: str) -> CustomUser:
+    """Find or create customer (User group) by phone."""
+    creds = store_review_credentials()
+    canonical_phone = creds[0] if creds and is_store_review_phone(phone) else phone.strip()
+
+    user = CustomUser.objects.filter(phone=canonical_phone).first()
+    if not user:
+        user = CustomUser.objects.filter(phone=phone.strip()).first()
+    if not user:
+        user = CustomUser.objects.create_user(phone=canonical_phone)
+        user.is_verified = True
+        user.save()
+    elif not user.is_verified:
+        user.is_verified = True
+        user.save(update_fields=['is_verified'])
+
+    if not user.groups.exists():
+        user_group = Group.objects.filter(name=GROUP_USER).first()
+        if user_group:
+            user.groups.add(user_group)
+    return user
+
+
+def _jwt_login_response(user) -> Response:
+    tokens = get_tokens_for_user(user)
+    return Response(
+        {
+            'access': tokens['access'],
+            'refresh': tokens['refresh'],
+            'user': UserListSerializer(user).data,
+        },
+        status=status.HTTP_200_OK,
+    )
+
+
 # ========== Authorization (Rus) ==========
 
 @extend_schema(
@@ -94,6 +135,15 @@ class SendOTPView(APIView):
             return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
         phone = serializer.validated_data['phone'].strip()
+
+        if is_store_review_phone(phone):
+            code = store_review_otp_code()
+            PhoneOTP.objects.filter(phone=phone).delete()
+            creds = store_review_credentials()
+            canonical = creds[0] if creds else phone
+            PhoneOTP.objects.create(phone=canonical, code=code)
+            return Response({'message': 'СМС код отправлен'}, status=status.HTTP_200_OK)
+
         code = generate_otp()
 
         PhoneOTP.objects.filter(phone=phone).delete()
@@ -144,7 +194,15 @@ class VerifyOTPView(APIView):
         phone = serializer.validated_data['phone'].strip()
         code = serializer.validated_data['code'].strip()
 
+        if is_store_review_login(phone, code):
+            user = _login_or_register_customer(phone)
+            return _jwt_login_response(user)
+
         otp = PhoneOTP.objects.filter(phone=phone, code=code).order_by('-created_at').first()
+        if not otp:
+            creds = store_review_credentials()
+            if creds:
+                otp = PhoneOTP.objects.filter(phone=creds[0], code=code).order_by('-created_at').first()
         if not otp:
             return Response({'detail': 'Неверный код'}, status=status.HTTP_400_BAD_REQUEST)
         if otp.is_expired():
@@ -152,26 +210,8 @@ class VerifyOTPView(APIView):
         otp.is_verified = True
         otp.save()
 
-        user = CustomUser.objects.filter(phone=phone).first()
-        if not user:
-            user = CustomUser.objects.create_user(phone=phone)
-            user.is_verified = True
-            user.save()
-            user_group = Group.objects.filter(name=GROUP_USER).first()
-            if user_group:
-                user.groups.add(user_group)
-        elif not user.groups.exists():
-            user_group = Group.objects.filter(name=GROUP_USER).first()
-            if user_group:
-                user.groups.add(user_group)
-
-        tokens = get_tokens_for_user(user)
-        result = {
-            'access': tokens['access'],
-            'refresh': tokens['refresh'],
-            'user': UserListSerializer(user).data,
-        }
-        return Response(result, status=status.HTTP_200_OK)
+        user = _login_or_register_customer(phone)
+        return _jwt_login_response(user)
 
 
 @extend_schema(

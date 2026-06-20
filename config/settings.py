@@ -485,6 +485,13 @@ if DAILY_CART_REMINDER_ENABLED:
 LOW_STOCK_THRESHOLD = int(os.getenv('LOW_STOCK_THRESHOLD', '5'))
 
 # =============================================================================
+# STORE REVIEW (App Store / Google Play demo login)
+# =============================================================================
+
+STORE_REVIEW_USER_PHONE = os.getenv('STORE_REVIEW_USER_PHONE', '').strip()
+STORE_REVIEW_USER_OTP = os.getenv('STORE_REVIEW_USER_OTP', '').strip()
+
+# =============================================================================
 # RATE LIMITING
 # =============================================================================
 
