@@ -37,7 +37,7 @@ from .services.store_review import (
     store_review_credentials,
     store_review_otp_code,
 )
-from .services.user_lifecycle import delete_or_deactivate_user
+from .services.user_lifecycle import delete_or_deactivate_user, delete_own_account, UserDeleteError
 
 
 GROUP_USER = 'User'
@@ -340,6 +340,41 @@ class UserProfileUpdateView(APIView):
         user.save()
         data = UserListSerializer(user).data
         return Response(data)
+
+
+@extend_schema(
+    tags=['Пользователи'],
+    summary='Удалить мой аккаунт',
+    description="""
+Удаление **своего** аккаунта (мобильное приложение).
+
+**Нельзя удалить**, если есть **активные** заказы (статусы: `created`, `confirmed`, `picking`, `shipped`, `delivered`).
+Заказы в статусах `completed`, `rejected`, `cancelled` не мешают удалению.
+
+- Активных заказов нет и истории нет → полное удаление (**204**).
+- Были завершённые заказы → деактивация (**200**), телефон освобождается для новой регистрации.
+""",
+    responses={
+        204: {'description': 'Аккаунт полностью удалён'},
+        200: {'description': 'Аккаунт деактивирован (есть история заказов)'},
+        400: {'description': 'Есть активные заказы'},
+    },
+)
+class UserSelfDeleteView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def delete(self, request):
+        try:
+            result = delete_own_account(request.user)
+        except UserDeleteError as exc:
+            payload = {'detail': exc.message, 'code': exc.code}
+            payload.update(exc.extra)
+            return Response(payload, status=status.HTTP_400_BAD_REQUEST)
+
+        if result.get('deleted'):
+            return Response(status=status.HTTP_204_NO_CONTENT)
+        return Response(result, status=status.HTTP_200_OK)
+
 
 def _get_users_by_group(group_name):
     group = Group.objects.filter(name=group_name).first()

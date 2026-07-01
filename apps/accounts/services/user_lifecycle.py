@@ -7,13 +7,36 @@ from django.db import transaction
 from django.db.models.deletion import ProtectedError
 
 from apps.accounts.models import CustomUser, UserDevice
+from apps.core.enums import OrderStatus
 
 
 class UserDeleteError(Exception):
-    def __init__(self, message: str, *, code: str = 'error'):
+    def __init__(self, message: str, *, code: str = 'error', extra: Optional[Dict[str, Any]] = None):
         self.message = message
         self.code = code
+        self.extra = extra or {}
         super().__init__(message)
+
+
+def account_delete_blocking_order_statuses() -> List[str]:
+    """Buyurtma shu statuslarda bo‘lsa akkauntni o‘chirib bo‘lmaydi."""
+    return [
+        OrderStatus.CREATED.value,
+        OrderStatus.CONFIRMED.value,
+        OrderStatus.PICKING.value,
+        OrderStatus.SHIPPED.value,
+        OrderStatus.DELIVERED.value,
+    ]
+
+
+def active_orders_blocking_account_delete(user: CustomUser):
+    from apps.orders.models import Order
+
+    return Order.objects.filter(
+        user_id=user.pk,
+        is_deleted=False,
+        status__in=account_delete_blocking_order_statuses(),
+    ).order_by('-id')
 
 
 def user_delete_blockers(user: CustomUser) -> List[str]:
@@ -88,3 +111,26 @@ def delete_or_deactivate_user(user: CustomUser) -> Dict[str, Any]:
             ),
             'blockers': user_delete_blockers(user),
         }
+
+
+@transaction.atomic
+def delete_own_account(user: CustomUser) -> Dict[str, Any]:
+    """
+    Mijoz o‘z akkauntini o‘chiradi.
+    Aktiv buyurtma bo‘lsa — xato (hech narsa o‘zgarmaydi).
+    """
+    active_qs = active_orders_blocking_account_delete(user)
+    active_count = active_qs.count()
+    if active_count:
+        active_ids = list(active_qs.values_list('id', flat=True)[:20])
+        raise UserDeleteError(
+            'Нельзя удалить аккаунт: есть активные заказы. '
+            'Дождитесь завершения, отмены или отклонения заказов.',
+            code='active_orders',
+            extra={
+                'active_orders_count': active_count,
+                'active_order_ids': active_ids,
+                'blocking_statuses': account_delete_blocking_order_statuses(),
+            },
+        )
+    return delete_or_deactivate_user(user)

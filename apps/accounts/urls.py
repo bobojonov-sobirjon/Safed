@@ -15,6 +15,7 @@ urlpatterns = [
     path('users/me/update/', views.UserProfileUpdateView.as_view(), name='user-profile-update'),
     path('users/me/password/send-code/', views.UserPasswordSendCodeView.as_view(), name='user-password-send-code'),
     path('users/me/password/', views.UserPasswordChangeByUserView.as_view(), name='user-password-change'),
+    path('users/me/delete/', views.UserSelfDeleteView.as_view(), name='user-self-delete'),
 
     # Staff create (Super Admin only)
     path('staff/create/', views.StaffCreateView.as_view(), name='staff-create'),
