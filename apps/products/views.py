@@ -28,6 +28,8 @@ from .serializers import (
 from .services import ProductService
 from .services.product_search import filter_products_by_query
 from .services.product_write import create_product_barcode
+from apps.core.mixins import PublicCatalogMixin
+from apps.core.authentication import OptionalJWTAuthentication
 from .openapi_product import PRODUCT_CREATE_DESCRIPTION, PRODUCT_UNIT_FORM_FIELDS
 
 # Yangi qo'shilgan mahsulotlar ro'yxatda birinchi (eng katta id).
@@ -293,6 +295,7 @@ class UnitDetailView(APIView):
 )
 class ProductUnitOptionsView(APIView):
     """Dropdown + qaysi maydonlar kerakligi (product_unit bo‘yicha)."""
+    authentication_classes = [OptionalJWTAuthentication]
     permission_classes = [AllowAny]
 
     def get(self, request):
@@ -434,13 +437,8 @@ def _product_write_kwargs(validated: dict) -> dict:
         },
     ),
 )
-class ProductListCreateView(APIView):
+class ProductListCreateView(PublicCatalogMixin, APIView):
     pagination_class = LimitOffsetPagination
-
-    def get_permissions(self):
-        if self.request.method == 'GET':
-            return [AllowAny()]
-        return [IsAuthenticated()]
 
     def get(self, request):
         from apps.categories.models import Category
@@ -546,12 +544,7 @@ class ProductListCreateView(APIView):
         description='Мягкое удаление (`is_deleted=true`). Только авторизованный админ.',
     ),
 )
-class ProductDetailView(APIView):
-    def get_permissions(self):
-        if self.request.method == 'GET':
-            return [AllowAny()]
-        return [IsAuthenticated()]
-
+class ProductDetailView(PublicCatalogMixin, APIView):
     def get(self, request, pk):
         try:
             product = Products.objects.get(pk=pk)

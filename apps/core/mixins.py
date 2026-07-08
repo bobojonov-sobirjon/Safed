@@ -3,7 +3,30 @@ Reusable mixins for views and serializers.
 """
 from typing import Optional, Type
 from rest_framework.request import Request
+from rest_framework.permissions import AllowAny, IsAuthenticated
 from django.db.models import Model
+
+from apps.core.authentication import OptionalJWTAuthentication
+
+
+class PublicCatalogMixin:
+    """
+    App Store guest mode: GET without login.
+    Invalid Bearer token must not block browsing (Guideline 5.1.1).
+    """
+
+    authentication_classes = [OptionalJWTAuthentication]
+    permission_classes = [AllowAny]
+
+    def get_authenticators(self):
+        if self.request.method == 'GET':
+            return [OptionalJWTAuthentication()]
+        return super().get_authenticators()
+
+    def get_permissions(self):
+        if self.request.method == 'GET':
+            return [AllowAny()]
+        return [IsAuthenticated()]
 
 
 class AuditMixin:

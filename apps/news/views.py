@@ -7,6 +7,8 @@ from rest_framework.permissions import AllowAny, IsAuthenticated
 from drf_spectacular.utils import extend_schema, extend_schema_view, OpenApiParameter, OpenApiExample
 from drf_spectacular.types import OpenApiTypes
 
+from apps.core.mixins import PublicCatalogMixin
+from apps.core.authentication import OptionalJWTAuthentication
 from .models import Posts, PostImages
 from .serializers import (
     PostListSerializer,
@@ -35,9 +37,7 @@ from .serializers import (
         OpenApiParameter(name='is_active', type=OpenApiTypes.BOOL, description='Фильтр по активности'),
     ],
 )
-class PostListView(APIView):
-    permission_classes = [AllowAny]
-
+class PostListView(PublicCatalogMixin, APIView):
     def get(self, request):
         date_from = request.query_params.get('date_from', '').strip()
         date_to = request.query_params.get('date_to', '').strip()
@@ -65,9 +65,7 @@ class PostListView(APIView):
 Публичный доступ. **404** если пост не найден.
 """,
 )
-class PostDetailView(APIView):
-    permission_classes = [AllowAny]
-
+class PostDetailView(PublicCatalogMixin, APIView):
     def get(self, request, pk):
         try:
             post = Posts.objects.get(pk=pk)
@@ -241,6 +239,7 @@ class PostDeleteView(APIView):
     ],
 )
 class PostImageListView(APIView):
+    authentication_classes = [OptionalJWTAuthentication]
     permission_classes = [AllowAny]
 
     def get(self, request):
@@ -258,6 +257,7 @@ class PostImageListView(APIView):
     description='Одна запись медиа поста: URL файла, связь с `post_id`. Публичный доступ.',
 )
 class PostImageDetailView(APIView):
+    authentication_classes = [OptionalJWTAuthentication]
     permission_classes = [AllowAny]
 
     def get(self, request, pk):

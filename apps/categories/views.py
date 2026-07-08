@@ -7,6 +7,7 @@ from rest_framework.permissions import AllowAny, IsAuthenticated
 from drf_spectacular.utils import extend_schema, extend_schema_view, OpenApiParameter
 from drf_spectacular.types import OpenApiTypes
 
+from apps.core.mixins import PublicCatalogMixin
 from .models import Category
 from .serializers import (
     CategoryTreeSerializer,
@@ -108,14 +109,8 @@ CATEGORY_RESPONSE_EXAMPLE = {
         },
     ),
 )
-class CategoryListCreateView(APIView):
+class CategoryListCreateView(PublicCatalogMixin, APIView):
     """GET: ro'yxat (filter bilan), POST: root category qo'shish (FormData + icon)"""
-    permission_classes = [AllowAny]
-
-    def get_permissions(self):
-        if self.request.method == 'GET':
-            return [AllowAny()]
-        return [IsAuthenticated()]
 
     def get(self, request):
         parent_id = request.query_params.get('parent')
@@ -283,14 +278,8 @@ class ChildCategoryCreateView(APIView):
         description='Удаление категории по ID. Все дочерние категории также будут удалены (CASCADE).',
     ),
 )
-class CategoryDetailUpdateDeleteView(APIView):
+class CategoryDetailUpdateDeleteView(PublicCatalogMixin, APIView):
     """GET, PUT, DELETE by id"""
-    permission_classes = [AllowAny]
-
-    def get_permissions(self):
-        if self.request.method == 'GET':
-            return [AllowAny()]
-        return [IsAuthenticated()]
 
     def get(self, request, pk):
         try:
@@ -358,13 +347,8 @@ class CategoryDetailUpdateDeleteView(APIView):
         responses={200: CategoryHomeListSerializer(many=True)},
     ),
 )
-class CategoryHomeListAssignView(APIView):
+class CategoryHomeListAssignView(PublicCatalogMixin, APIView):
     """GET: home_order > 0, order_by home_order. POST: назначить слот, конфликтующие — null."""
-
-    def get_permissions(self):
-        if self.request.method == 'GET':
-            return [AllowAny()]
-        return [IsAuthenticated()]
 
     def get(self, request):
         qs = (
