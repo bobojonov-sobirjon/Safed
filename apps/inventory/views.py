@@ -24,16 +24,19 @@ from .models import (
     StockReceipt,
     StockReceiptItem,
     ReceiptStatus,
+    PaymentStatus,
     SupplierReconciliationAct,
     ReconciliationActStatus,
 )
 from .serializers import (
     SupplierSerializer,
     StockReceiptSerializer,
+    StockReceiptListSerializer,
     StockReceiptCreateSerializer,
     StockReceiptHeaderUpdateSerializer,
     ReceiptItemSerializer,
     ReceiptItemCreateUpdateSerializer,
+    ReceiptPaymentSerializer,
     BarcodeLookupSerializer,
     ProductRestockSerializer,
     SupplierReconciliationActSerializer,
@@ -42,7 +45,15 @@ from .serializers import (
     SupplierReconciliationActDetailSerializer,
 )
 from .services.stock import StockError, restock_product_by_barcode
-from .services.receipt import ReceiptError, post_stock_receipt, cancel_stock_receipt, recalculate_receipt_subtotal
+from .services.receipt import (
+    ReceiptError,
+    post_stock_receipt,
+    unpost_stock_receipt,
+    cancel_stock_receipt,
+    recalculate_receipt_subtotal,
+    next_receipt_doc_number,
+    set_receipt_paid_amount,
+)
 from .services.reconciliation import (
     ReconciliationError,
     build_reconciliation_preview,
@@ -286,13 +297,34 @@ class ReceiptListCreateView(AdminOnlyMixin, APIView):
         ],
     )
     def get(self, request):
-        qs = StockReceipt.objects.select_related('supplier', 'created_by').order_by('-created_at')
+        qs = (
+            StockReceipt.objects.select_related('supplier', 'created_by')
+            .annotate(items_count=models.Count('items'))
+            .order_by('-created_at')
+        )
         status_filter = request.query_params.get('status')
         if status_filter:
             qs = qs.filter(status=status_filter)
         supplier_id = request.query_params.get('supplier')
         if supplier_id:
             qs = qs.filter(supplier_id=supplier_id)
+        q = (request.query_params.get('q') or '').strip()
+        if q:
+            qs = qs.filter(
+                models.Q(doc_number__icontains=q)
+                | models.Q(notes__icontains=q)
+                | models.Q(supplier__name__icontains=q)
+            )
+        payment_status = (request.query_params.get('payment_status') or '').strip()
+        if payment_status == PaymentStatus.UNPAID:
+            qs = qs.filter(paid_amount__lte=0)
+        elif payment_status == PaymentStatus.PAID:
+            qs = qs.filter(
+                models.Q(paid_amount__gte=models.F('subtotal'), subtotal__gt=0)
+                | models.Q(subtotal=0)
+            )
+        elif payment_status == PaymentStatus.PARTIAL:
+            qs = qs.filter(paid_amount__gt=0, paid_amount__lt=models.F('subtotal'))
         date_from = parse_date(request.query_params.get('date_from') or '') if request.query_params.get('date_from') else None
         date_to = parse_date(request.query_params.get('date_to') or '') if request.query_params.get('date_to') else None
         if date_from:
@@ -300,7 +332,7 @@ class ReceiptListCreateView(AdminOnlyMixin, APIView):
         if date_to:
             qs = qs.filter(doc_date__lte=date_to)
         meta, page = _paginate_queryset(request, qs)
-        data = StockReceiptSerializer(page, many=True, context={'request': request}).data
+        data = StockReceiptListSerializer(page, many=True, context={'request': request}).data
         if meta:
             return Response({'count': meta['count'], 'limit': meta['limit'], 'offset': meta['offset'], 'results': data})
         return Response(data)
@@ -308,22 +340,30 @@ class ReceiptListCreateView(AdminOnlyMixin, APIView):
     @extend_schema(
         request=StockReceiptCreateSerializer,
         responses=StockReceiptSerializer,
-        summary='Приходы: создать черновик (шапка документа)',
-        description='''Создаёт приходный документ в статусе **черновик** (`draft`): шапка (дата, номер, поставщик).
+        summary='Закупки: создать документ (шапка)',
+        description='''Создаёт документ закупки (`draft`): контрагент, дата, примечание.
 
-Дальше добавляйте позиции через `POST /inventory/receipts/{id}/items/`, затем проведите документ через `POST /inventory/receipts/{id}/post/`.
-
-Доступ: только **Super Admin** и **Admin**.''',
+`doc_number` необязателен — генерируется автоматически (1, 2, 3...).
+Далее: `POST .../items/` → товары, `POST .../post/` → провести (остатки +).''',
     )
     def post(self, request):
+        from django.utils import timezone as dj_tz
+
         serializer = StockReceiptCreateSerializer(data=request.data)
         if not serializer.is_valid():
             return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
         v = serializer.validated_data
+        doc_number = (v.get('doc_number') or '').strip() or next_receipt_doc_number()
+        if StockReceipt.objects.filter(doc_number=doc_number).exists():
+            return Response(
+                {'doc_number': ['Документ с таким номером уже существует.']},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
         receipt = StockReceipt.objects.create(
             supplier_id=v['supplier_id'],
-            doc_number=v['doc_number'],
-            doc_date=v['doc_date'],
+            doc_number=doc_number,
+            doc_date=v.get('doc_date') or dj_tz.localdate(),
+            notes=v.get('notes') or '',
             status=ReceiptStatus.DRAFT,
             created_by=request.user,
         )
@@ -365,6 +405,23 @@ class ReceiptDetailView(AdminOnlyMixin, APIView):
         receipt.refresh_from_db()
         return Response(StockReceiptSerializer(receipt, context={'request': request}).data)
 
+    @extend_schema(
+        summary='Приход: удалить (только черновик)',
+        description='Удаление документа закупки разрешено только в статусе `draft`.',
+    )
+    def delete(self, request, pk):
+        try:
+            receipt = StockReceipt.objects.get(pk=pk)
+        except StockReceipt.DoesNotExist:
+            return Response({'detail': 'Не найден'}, status=status.HTTP_404_NOT_FOUND)
+        if receipt.status != ReceiptStatus.DRAFT:
+            return Response(
+                {'detail': 'Удаление возможно только в статусе черновик (draft)'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        receipt.delete()
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
 
 @extend_schema(
     tags=['Инвентаризация / Приходы'],
@@ -373,6 +430,7 @@ class ReceiptDetailView(AdminOnlyMixin, APIView):
 
 **Эффект:**
 - для каждой строки увеличивается `Products.quantity` на `quantity`
+- если `update_catalog_price=true` — обновляется `Products.price`
 - документ блокируется (после проведения строки/шапку менять нельзя)
 
 Операция выполняется в транзакции. Доступ: только **Super Admin** и **Admin**.''',
@@ -412,6 +470,51 @@ class ReceiptCancelView(AdminOnlyMixin, APIView):
         try:
             with transaction.atomic():
                 receipt = cancel_stock_receipt(receipt, cancelled_by=request.user)
+        except ReceiptError as exc:
+            return Response({'detail': exc.message, 'code': exc.code}, status=status.HTTP_400_BAD_REQUEST)
+        receipt = StockReceipt.objects.select_related('supplier', 'created_by').prefetch_related('items').get(pk=receipt.pk)
+        return Response(StockReceiptSerializer(receipt, context={'request': request}).data)
+
+
+@extend_schema(
+    tags=['Инвентаризация / Приходы'],
+    summary='Приход: отменить проводку',
+    description='''Кнопка UI «Отменить проводку»: `posted` → `draft`, остатки откатываются.
+После этого документ снова можно редактировать и провести заново.''',
+)
+class ReceiptUnpostView(AdminOnlyMixin, APIView):
+    def post(self, request, pk):
+        try:
+            receipt = StockReceipt.objects.get(pk=pk)
+        except StockReceipt.DoesNotExist:
+            return Response({'detail': 'Не найден'}, status=status.HTTP_404_NOT_FOUND)
+        try:
+            with transaction.atomic():
+                receipt = unpost_stock_receipt(receipt, unposted_by=request.user)
+        except ReceiptError as exc:
+            return Response({'detail': exc.message, 'code': exc.code}, status=status.HTTP_400_BAD_REQUEST)
+        receipt = StockReceipt.objects.select_related('supplier', 'created_by').prefetch_related('items').get(pk=receipt.pk)
+        return Response(StockReceiptSerializer(receipt, context={'request': request}).data)
+
+
+@extend_schema(
+    tags=['Инвентаризация / Приходы'],
+    summary='Приход: установить оплату',
+    description='''Вкладка «Оплата»: задаёт `paid_amount` (Оплачено). `debt` = `subtotal` − `paid_amount`.''',
+    request=ReceiptPaymentSerializer,
+    responses=StockReceiptSerializer,
+)
+class ReceiptPaymentView(AdminOnlyMixin, APIView):
+    def post(self, request, pk):
+        try:
+            receipt = StockReceipt.objects.get(pk=pk)
+        except StockReceipt.DoesNotExist:
+            return Response({'detail': 'Не найден'}, status=status.HTTP_404_NOT_FOUND)
+        serializer = ReceiptPaymentSerializer(data=request.data)
+        if not serializer.is_valid():
+            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+        try:
+            receipt = set_receipt_paid_amount(receipt, serializer.validated_data['paid_amount'])
         except ReceiptError as exc:
             return Response({'detail': exc.message, 'code': exc.code}, status=status.HTTP_400_BAD_REQUEST)
         receipt = StockReceipt.objects.select_related('supplier', 'created_by').prefetch_related('items').get(pk=receipt.pk)
@@ -465,12 +568,15 @@ class ReceiptItemListCreateView(AdminOnlyMixin, APIView):
 
         product = Products.objects.get(pk=v['product_id'])
         purchase_price = v['purchase_price'].quantize(Decimal('0.01'))
-        if 'sell_price' in v:
+        if 'sell_price' in v and v['sell_price'] is not None:
             sell_price = v['sell_price'].quantize(Decimal('0.01'))
             margin_percent = v.get('margin_percent')
-        else:
+        elif 'margin_percent' in v and v['margin_percent'] is not None:
             margin_percent = v['margin_percent']
             sell_price = (purchase_price * (Decimal('1.00') + (margin_percent / Decimal('100')))).quantize(Decimal('0.01'))
+        else:
+            margin_percent = None
+            sell_price = Decimal(product.price).quantize(Decimal('0.01'))
 
         line_total = (purchase_price * Decimal(v['quantity'])).quantize(Decimal('0.01'))
         barcode = ProductBarcode.objects.filter(product_id=product.id, is_deleted=False).values_list('barcode', flat=True).first() or ''
@@ -482,6 +588,7 @@ class ReceiptItemListCreateView(AdminOnlyMixin, APIView):
             purchase_price=purchase_price,
             sell_price=sell_price,
             margin_percent=margin_percent,
+            update_catalog_price=bool(v.get('update_catalog_price', False)),
             line_total=line_total,
             product_name_snapshot=product.safe_translation_getter('name', any_language=True) or '',
             barcode_snapshot=barcode,
@@ -523,18 +630,22 @@ class ReceiptItemDetailView(AdminOnlyMixin, APIView):
 
         product = Products.objects.get(pk=v['product_id'])
         purchase_price = v['purchase_price'].quantize(Decimal('0.01'))
-        if 'sell_price' in v:
+        if 'sell_price' in v and v['sell_price'] is not None:
             sell_price = v['sell_price'].quantize(Decimal('0.01'))
             margin_percent = v.get('margin_percent')
-        else:
+        elif 'margin_percent' in v and v['margin_percent'] is not None:
             margin_percent = v['margin_percent']
             sell_price = (purchase_price * (Decimal('1.00') + (margin_percent / Decimal('100')))).quantize(Decimal('0.01'))
+        else:
+            margin_percent = None
+            sell_price = Decimal(product.price).quantize(Decimal('0.01'))
 
         item.product = product
         item.quantity = v['quantity']
         item.purchase_price = purchase_price
         item.sell_price = sell_price
         item.margin_percent = margin_percent
+        item.update_catalog_price = bool(v.get('update_catalog_price', item.update_catalog_price))
         item.line_total = (purchase_price * Decimal(v['quantity'])).quantize(Decimal('0.01'))
         item.product_name_snapshot = product.safe_translation_getter('name', any_language=True) or ''
         item.barcode_snapshot = ProductBarcode.objects.filter(product_id=product.id, is_deleted=False).values_list('barcode', flat=True).first() or ''

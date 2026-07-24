@@ -34,14 +34,27 @@ class ReconciliationActStatus(models.TextChoices):
     CONFIRMED = 'confirmed', 'Подтверждён'
 
 
+class PaymentStatus(models.TextChoices):
+    UNPAID = 'unpaid', 'Не оплачен'
+    PARTIAL = 'partial', 'Частично'
+    PAID = 'paid', 'Оплачен'
+
+
 class StockReceipt(models.Model):
-    """Приходный документ."""
+    """Приходный документ (закупка / оптовая закупка)."""
     supplier = models.ForeignKey(Supplier, on_delete=models.PROTECT, related_name='receipts')
     doc_number = models.CharField(max_length=50, db_index=True)
     doc_date = models.DateField(db_index=True)
     status = models.CharField(max_length=20, choices=ReceiptStatus.choices, default=ReceiptStatus.DRAFT, db_index=True)
+    notes = models.TextField(blank=True, default='', verbose_name='Примечание')
 
-    subtotal = models.DecimalField(max_digits=14, decimal_places=2, default=Decimal('0.00'))
+    subtotal = models.DecimalField(max_digits=14, decimal_places=2, default=Decimal('0.00'), verbose_name='Сумма')
+    paid_amount = models.DecimalField(
+        max_digits=14,
+        decimal_places=2,
+        default=Decimal('0.00'),
+        verbose_name='Оплачено',
+    )
     created_by = models.ForeignKey(
         'accounts.CustomUser',
         on_delete=models.PROTECT,
@@ -78,6 +91,20 @@ class StockReceipt(models.Model):
     def __str__(self) -> str:
         return f'Receipt {self.doc_number}'
 
+    @property
+    def debt(self) -> Decimal:
+        return (self.subtotal - self.paid_amount).quantize(Decimal('0.01'))
+
+    @property
+    def payment_status(self) -> str:
+        if self.paid_amount <= 0:
+            return PaymentStatus.UNPAID
+        if self.paid_amount >= self.subtotal and self.subtotal > 0:
+            return PaymentStatus.PAID
+        if self.paid_amount >= self.subtotal and self.subtotal == 0:
+            return PaymentStatus.PAID
+        return PaymentStatus.PARTIAL
+
 
 class StockReceiptItem(models.Model):
     receipt = models.ForeignKey(StockReceipt, on_delete=models.CASCADE, related_name='items')
@@ -87,6 +114,11 @@ class StockReceiptItem(models.Model):
     purchase_price = models.DecimalField(max_digits=14, decimal_places=2, default=Decimal('0.00'))
     sell_price = models.DecimalField(max_digits=14, decimal_places=2, default=Decimal('0.00'))
     margin_percent = models.DecimalField(max_digits=6, decimal_places=2, null=True, blank=True)
+    update_catalog_price = models.BooleanField(
+        default=False,
+        verbose_name='Изменить тек. цену',
+        help_text='При проведении обновить Products.price = sell_price',
+    )
 
     line_total = models.DecimalField(max_digits=14, decimal_places=2, default=Decimal('0.00'))
 

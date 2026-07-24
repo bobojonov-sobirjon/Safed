@@ -13,7 +13,9 @@ urlpatterns = [
     path('inventory/receipts/', views.ReceiptListCreateView.as_view(), name='inventory-receipt-list-create'),
     path('inventory/receipts/<int:pk>/', views.ReceiptDetailView.as_view(), name='inventory-receipt-detail'),
     path('inventory/receipts/<int:pk>/post/', views.ReceiptPostView.as_view(), name='inventory-receipt-post'),
+    path('inventory/receipts/<int:pk>/unpost/', views.ReceiptUnpostView.as_view(), name='inventory-receipt-unpost'),
     path('inventory/receipts/<int:pk>/cancel/', views.ReceiptCancelView.as_view(), name='inventory-receipt-cancel'),
+    path('inventory/receipts/<int:pk>/payment/', views.ReceiptPaymentView.as_view(), name='inventory-receipt-payment'),
 
     # Receipt items
     path('inventory/receipts/<int:receipt_id>/items/', views.ReceiptItemListCreateView.as_view(), name='inventory-receipt-item-list-create'),

@@ -12,6 +12,7 @@ from .models import (
     ReceiptStatus,
     SupplierReconciliationAct,
     ReconciliationActStatus,
+    PaymentStatus,
 )
 from apps.products.models import Products, ProductBarcode
 from apps.products.serializers import ProductListSerializer
@@ -36,12 +37,14 @@ class SupplierSerializer(serializers.ModelSerializer):
 
 class ReceiptItemSerializer(serializers.ModelSerializer):
     product_data = serializers.SerializerMethodField()
+    current_catalog_price = serializers.SerializerMethodField()
 
     class Meta:
         model = StockReceiptItem
         fields = [
             'id', 'product', 'product_data',
             'quantity', 'purchase_price', 'sell_price', 'margin_percent',
+            'update_catalog_price', 'current_catalog_price',
             'line_total', 'product_name_snapshot', 'barcode_snapshot',
             'created_at', 'updated_at',
         ]
@@ -51,31 +54,72 @@ class ReceiptItemSerializer(serializers.ModelSerializer):
             return ProductListSerializer(obj.product, context=self.context).data
         return None
 
+    def get_current_catalog_price(self, obj) -> Optional[str]:
+        if obj.product_id and obj.product:
+            return str(obj.product.price)
+        return None
+
 
 class StockReceiptSerializer(serializers.ModelSerializer):
     supplier_data = SupplierSerializer(source='supplier', read_only=True)
     items = ReceiptItemSerializer(many=True, read_only=True)
+    debt = serializers.DecimalField(max_digits=14, decimal_places=2, read_only=True)
+    payment_status = serializers.CharField(read_only=True)
+    items_count = serializers.SerializerMethodField()
+    total_quantity = serializers.SerializerMethodField()
 
     class Meta:
         model = StockReceipt
         fields = [
             'id', 'supplier', 'supplier_data',
-            'doc_number', 'doc_date', 'status',
-            'subtotal', 'created_by', 'posted_by', 'posted_at',
+            'doc_number', 'doc_date', 'status', 'notes',
+            'subtotal', 'paid_amount', 'debt', 'payment_status',
+            'items_count', 'total_quantity',
+            'created_by', 'posted_by', 'posted_at',
             'cancelled_by', 'cancelled_at',
             'created_at', 'updated_at',
             'items',
         ]
         read_only_fields = [
-            'id', 'subtotal', 'created_by', 'posted_by', 'posted_at',
+            'id', 'subtotal', 'debt', 'payment_status',
+            'created_by', 'posted_by', 'posted_at',
             'cancelled_by', 'cancelled_at', 'created_at', 'updated_at', 'items',
+        ]
+
+    def get_items_count(self, obj) -> int:
+        if hasattr(obj, '_prefetched_objects_cache') and 'items' in obj._prefetched_objects_cache:
+            return len(obj.items.all())
+        return obj.items.count()
+
+    def get_total_quantity(self, obj) -> int:
+        items = obj.items.all()
+        return sum(int(i.quantity) for i in items)
+
+
+class StockReceiptListSerializer(serializers.ModelSerializer):
+    """Список закупок без вложенных строк (как верхняя таблица UI)."""
+    supplier_data = SupplierSerializer(source='supplier', read_only=True)
+    debt = serializers.DecimalField(max_digits=14, decimal_places=2, read_only=True)
+    payment_status = serializers.CharField(read_only=True)
+    items_count = serializers.IntegerField(read_only=True, required=False)
+
+    class Meta:
+        model = StockReceipt
+        fields = [
+            'id', 'supplier', 'supplier_data',
+            'doc_number', 'doc_date', 'status', 'notes',
+            'subtotal', 'paid_amount', 'debt', 'payment_status',
+            'items_count',
+            'created_by', 'posted_by', 'posted_at',
+            'cancelled_by', 'cancelled_at',
+            'created_at', 'updated_at',
         ]
 
 
 class StockReceiptHeaderUpdateSerializer(serializers.ModelSerializer):
     class Meta:
         model = StockReceipt
-        fields = ['supplier', 'doc_number', 'doc_date']
+        fields = ['supplier', 'doc_number', 'doc_date', 'notes']
 
     def validate_supplier(self, value):
         if not value.is_active:
@@ -86,16 +130,25 @@ class StockReceiptHeaderUpdateSerializer(serializers.ModelSerializer):
 class StockReceiptCreateSerializer(serializers.Serializer):
     supplier_id = serializers.IntegerField(
         required=True,
-        help_text='ID поставщика (только активные).',
+        help_text='ID поставщика / контрагента (только активные).',
         error_messages=_REQUIRED,
     )
     doc_number = serializers.CharField(
-        required=True,
+        required=False,
+        allow_blank=True,
         max_length=50,
-        help_text='Номер приходного документа (уникальный в системе).',
-        error_messages=_REQUIRED,
+        help_text='Номер документа. Если не передан — генерируется автоматически (1, 2, 3...).',
     )
-    doc_date = serializers.DateField(required=True, help_text='Дата документа.', error_messages=_REQUIRED)
+    doc_date = serializers.DateField(
+        required=False,
+        help_text='Дата документа. По умолчанию — сегодня.',
+    )
+    notes = serializers.CharField(
+        required=False,
+        allow_blank=True,
+        default='',
+        help_text='Примечание.',
+    )
 
     def validate_supplier_id(self, value):
         if not Supplier.objects.filter(pk=value, is_active=True).exists():
@@ -120,21 +173,26 @@ class ReceiptItemCreateUpdateSerializer(serializers.Serializer):
         max_digits=14,
         decimal_places=2,
         min_value=Decimal('0.00'),
-        help_text='Закупочная цена за единицу.',
+        help_text='Закупочная цена / стоимость за единицу.',
     )
     sell_price = serializers.DecimalField(
         required=False,
         max_digits=14,
         decimal_places=2,
         min_value=Decimal('0.00'),
-        help_text='Цена продажи за единицу (если не указана — будет рассчитана по наценке).',
+        help_text='Цена реализации (если не указана — по наценке).',
     )
     margin_percent = serializers.DecimalField(
         required=False,
         max_digits=6,
         decimal_places=2,
         min_value=Decimal('0.00'),
-        help_text='Наценка в процентах от закупочной цены (если не указана `sell_price`).',
+        help_text='Наценка (%) от закупочной цены.',
+    )
+    update_catalog_price = serializers.BooleanField(
+        required=False,
+        default=False,
+        help_text='Изменить тек. цену товара в каталоге при проведении документа.',
     )
 
     def validate_product_id(self, value):
@@ -143,13 +201,21 @@ class ReceiptItemCreateUpdateSerializer(serializers.Serializer):
         return value
 
     def validate(self, attrs):
-        # If sell_price not provided but margin_percent provided → compute sell_price later in view/service.
-        # If sell_price provided but margin_percent missing → ok.
         if 'sell_price' not in attrs and 'margin_percent' not in attrs:
-            raise serializers.ValidationError(
-                {'sell_price': 'Укажите цену продажи (sell_price) или наценку в процентах (margin_percent).'}
-            )
+            # Default: keep current catalog price as sell_price hint — allow create with only purchase
+            attrs.setdefault('margin_percent', Decimal('0.00'))
         return attrs
+
+
+class ReceiptPaymentSerializer(serializers.Serializer):
+    paid_amount = serializers.DecimalField(
+        required=True,
+        max_digits=14,
+        decimal_places=2,
+        min_value=Decimal('0.00'),
+        help_text='Итого оплачено по документу (Оплачено). Долг = Сумма − Оплачено.',
+        error_messages=_REQUIRED,
+    )
 
 
 class BarcodeLookupSerializer(serializers.Serializer):
