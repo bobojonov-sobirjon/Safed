@@ -46,6 +46,8 @@ from .serializers import (
     OrderFeeSettingsSerializer,
     DeliveryFeeRuleSerializer,
     DeliveryZoneSerializer,
+    WarehouseRadiusPreviewSerializer,
+    DeliveryZoneCheckResponseSerializer,
     CashbackSettingsSerializer,
     CashbackTransactionSerializer,
 )
@@ -1085,6 +1087,40 @@ class DeliveryZoneDetailView(APIView):
             return Response({'detail': 'Не найден'}, status=status.HTTP_404_NOT_FOUND)
         obj.delete()
         return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+class WarehouseRadiusPreviewView(APIView):
+    """
+    Admin: saqlanmagan sklad markazi + radius_km ni mijoz nuqtasiga nisbatan sinash.
+    Haversine — DB yozmasdan preview.
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    @extend_schema(
+        tags=[TAG_FEES],
+        summary='Sklad radius preview (Haversine)',
+        request=WarehouseRadiusPreviewSerializer,
+        responses=DeliveryZoneCheckResponseSerializer,
+    )
+    def post(self, request):
+        denied = ensure_admin_or_super_admin(request)
+        if denied:
+            return denied
+        serializer = WarehouseRadiusPreviewSerializer(data=request.data)
+        if not serializer.is_valid():
+            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+        v = serializer.validated_data
+        from apps.orders.services.delivery_zone import check_point_against_warehouse
+
+        result = check_point_against_warehouse(
+            customer_lat=v['customer_latitude'],
+            customer_lon=v['customer_longitude'],
+            warehouse_lat=v['warehouse_latitude'],
+            warehouse_lon=v['warehouse_longitude'],
+            radius_km=v['radius_km'],
+        )
+        return Response(result.as_dict())
 
 
 # =============================================================================

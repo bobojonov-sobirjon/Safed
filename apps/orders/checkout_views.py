@@ -363,21 +363,10 @@ class DeliveryZoneCheckView(APIView):
             return Response(ser.errors, status=status.HTTP_400_BAD_REQUEST)
         lat = ser.validated_data['lat']
         lon = ser.validated_data['long']
-        from apps.orders.services.delivery_zone import (
-            is_location_in_delivery_zone,
-            nearest_zone_distance_m,
-            validate_delivery_location,
-        )
+        from apps.orders.services.delivery_zone import check_customer_in_zones
 
-        allowed = is_location_in_delivery_zone(lat, lon)
-        nearest = nearest_zone_distance_m(lat, lon)
-        payload = {
-            'allowed': allowed,
-            'message': '' if allowed else (validate_delivery_location(lat, lon) or ''),
-            'nearest_zone_id': nearest[0] if nearest else None,
-            'distance_m': round(nearest[1], 2) if nearest else None,
-        }
-        return Response(payload)
+        result = check_customer_in_zones(lat, lon)
+        return Response(result.as_dict())
 
 
 @extend_schema(

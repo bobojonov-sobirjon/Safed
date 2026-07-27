@@ -45,6 +45,11 @@ urlpatterns = [
     path('admin/fees/delivery-rules/', views.DeliveryFeeRuleListCreateView.as_view(), name='delivery-fee-rule-list-create'),
     path('admin/fees/delivery-rules/<int:pk>/', views.DeliveryFeeRuleDetailView.as_view(), name='delivery-fee-rule-detail'),
     path('admin/delivery-zones/', views.DeliveryZoneListCreateView.as_view(), name='delivery-zone-list-create'),
+    path(
+        'admin/delivery-zones/preview/',
+        views.WarehouseRadiusPreviewView.as_view(),
+        name='delivery-zone-preview',
+    ),
     path('admin/delivery-zones/<int:pk>/', views.DeliveryZoneDetailView.as_view(), name='delivery-zone-detail'),
     path('admin/cashback/settings/', views.CashbackSettingsView.as_view(), name='cashback-settings'),
     path('admin/cashback/transactions/', views.CashbackTransactionListView.as_view(), name='cashback-transactions'),

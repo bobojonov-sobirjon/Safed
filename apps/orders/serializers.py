@@ -1037,6 +1037,44 @@ class DeliveryFeeRuleSerializer(serializers.ModelSerializer):
 
 
 class DeliveryZoneSerializer(serializers.ModelSerializer):
+    """
+    Admin panel: sklad markazi + yetkazib berish radiusi.
+
+    Frontend yuborishi mumkin:
+    - `latitude` / `longitude` / `radius_km`  (tavsiya)
+    - yoki `lat` / `long` / `radius_m`         (legacy)
+
+    DB da saqlanadi: lat, long, radius_m.
+    """
+
+    latitude = serializers.DecimalField(
+        max_digits=GEO_COORD_MAX_DIGITS,
+        decimal_places=GEO_COORD_DECIMAL_PLACES,
+        required=False,
+        write_only=True,
+        help_text='Sklad kengligi (−90…90). Alias: `lat`.',
+    )
+    longitude = serializers.DecimalField(
+        max_digits=GEO_COORD_MAX_DIGITS,
+        decimal_places=GEO_COORD_DECIMAL_PLACES,
+        required=False,
+        write_only=True,
+        help_text='Sklad uzunligi (−180…180). Alias: `long`.',
+    )
+    radius_km = serializers.DecimalField(
+        max_digits=8,
+        decimal_places=3,
+        required=False,
+        write_only=True,
+        min_value=Decimal('0.001'),
+        max_value=Decimal('500'),
+        help_text='Yetkazib berish radiusi (km), masalan 10. Alias: `radius_m`.',
+    )
+    # Response uchun qulay maydonlar
+    radius_km_display = serializers.SerializerMethodField(
+        help_text='Radius kilometrda (o‘qish uchun).',
+    )
+
     class Meta:
         model = DeliveryZone
         fields = [
@@ -1045,37 +1083,207 @@ class DeliveryZoneSerializer(serializers.ModelSerializer):
             'address',
             'lat',
             'long',
+            'latitude',
+            'longitude',
             'radius_m',
+            'radius_km',
+            'radius_km_display',
             'is_active',
             'created_at',
             'updated_at',
         ]
-        read_only_fields = ['id', 'created_at', 'updated_at']
+        read_only_fields = ['id', 'created_at', 'updated_at', 'radius_km_display']
         extra_kwargs = {
-            'address': {'help_text': 'Markaz manzili (matn).'},
-            'lat': {'help_text': 'Markaz kengligi.'},
-            'long': {'help_text': 'Markaz uzunligi.'},
-            'radius_m': {'help_text': 'Radius metrlarda — shu masofadan tashqarida buyurtma ochilmaydi.'},
+            'address': {'help_text': 'Markaz manzili (matn).', 'required': False, 'allow_blank': True},
+            'lat': {
+                'help_text': 'Markaz kengligi.',
+                'required': False,
+                'max_digits': GEO_COORD_MAX_DIGITS,
+                'decimal_places': GEO_COORD_DECIMAL_PLACES,
+            },
+            'long': {
+                'help_text': 'Markaz uzunligi.',
+                'required': False,
+                'max_digits': GEO_COORD_MAX_DIGITS,
+                'decimal_places': GEO_COORD_DECIMAL_PLACES,
+            },
+            'radius_m': {
+                'help_text': 'Radius metrlarda.',
+                'required': False,
+                'min_value': 1,
+            },
             'is_active': {'help_text': 'Faol zonalar ichida bo‘lmasa buyurtma rad etiladi.'},
+            'name': {'required': False, 'allow_blank': True},
         }
+
+    def get_radius_km_display(self, obj) -> float:
+        from apps.core.geo import m_to_km
+
+        return round(m_to_km(obj.radius_m), 3)
+
+    def _validate_lat(self, value):
+        from apps.core.geo import validate_latitude
+
+        try:
+            validate_latitude(value)
+        except ValueError as exc:
+            raise serializers.ValidationError(str(exc)) from exc
+        return value
+
+    def _validate_lon(self, value):
+        from apps.core.geo import validate_longitude
+
+        try:
+            validate_longitude(value)
+        except ValueError as exc:
+            raise serializers.ValidationError(str(exc)) from exc
+        return value
+
+    def validate_lat(self, value):
+        return self._validate_lat(value)
+
+    def validate_long(self, value):
+        return self._validate_lon(value)
+
+    def validate_latitude(self, value):
+        return self._validate_lat(value)
+
+    def validate_longitude(self, value):
+        return self._validate_lon(value)
+
+    def validate(self, attrs):
+        # Alias → model fields
+        if 'latitude' in attrs and 'lat' not in attrs:
+            attrs['lat'] = attrs.pop('latitude')
+        else:
+            attrs.pop('latitude', None)
+
+        if 'longitude' in attrs and 'long' not in attrs:
+            attrs['long'] = attrs.pop('longitude')
+        else:
+            attrs.pop('longitude', None)
+
+        if 'radius_km' in attrs and 'radius_m' not in attrs:
+            from apps.core.geo import km_to_m
+
+            try:
+                attrs['radius_m'] = km_to_m(attrs.pop('radius_km'))
+            except ValueError as exc:
+                raise serializers.ValidationError({'radius_km': str(exc)}) from exc
+        else:
+            attrs.pop('radius_km', None)
+
+        # Create: lat/long/radius majburiy
+        if self.instance is None:
+            missing = {}
+            if 'lat' not in attrs:
+                missing['latitude'] = 'Обязательное поле (latitude yoki lat).'
+            if 'long' not in attrs:
+                missing['longitude'] = 'Обязательное поле (longitude yoki long).'
+            if 'radius_m' not in attrs:
+                missing['radius_km'] = 'Обязательное поле (radius_km yoki radius_m).'
+            if missing:
+                raise serializers.ValidationError(missing)
+
+        # address default
+        if self.instance is None and not attrs.get('address'):
+            attrs['address'] = attrs.get('name') or 'Склад'
+
+        return attrs
 
 
 class DeliveryZoneCheckSerializer(serializers.Serializer):
+    """Mijoz manzili — faol sklad zonalariga tushadimi?"""
+
     lat = serializers.DecimalField(
         max_digits=GEO_COORD_MAX_DIGITS,
         decimal_places=GEO_COORD_DECIMAL_PLACES,
+        required=False,
     )
     long = serializers.DecimalField(
         max_digits=GEO_COORD_MAX_DIGITS,
         decimal_places=GEO_COORD_DECIMAL_PLACES,
+        required=False,
     )
+    latitude = serializers.DecimalField(
+        max_digits=GEO_COORD_MAX_DIGITS,
+        decimal_places=GEO_COORD_DECIMAL_PLACES,
+        required=False,
+    )
+    longitude = serializers.DecimalField(
+        max_digits=GEO_COORD_MAX_DIGITS,
+        decimal_places=GEO_COORD_DECIMAL_PLACES,
+        required=False,
+    )
+
+    def validate(self, attrs):
+        lat = attrs.get('latitude', attrs.get('lat'))
+        lon = attrs.get('longitude', attrs.get('long'))
+        if lat is None or lon is None:
+            raise serializers.ValidationError(
+                {'latitude': 'latitude/lat va longitude/long majburiy.'}
+            )
+        from apps.core.geo import validate_latitude, validate_longitude
+
+        try:
+            validate_latitude(lat)
+            validate_longitude(lon)
+        except ValueError as exc:
+            raise serializers.ValidationError(str(exc)) from exc
+        attrs['lat'] = lat
+        attrs['long'] = lon
+        return attrs
+
+
+class WarehouseRadiusPreviewSerializer(serializers.Serializer):
+    """
+    Ad-hoc preview: saqlanmagan sklad markazi + radius_km vs mijoz nuqtasi.
+    Admin paneldagi «radiusni sinash» uchun.
+    """
+
+    warehouse_latitude = serializers.DecimalField(
+        max_digits=GEO_COORD_MAX_DIGITS,
+        decimal_places=GEO_COORD_DECIMAL_PLACES,
+    )
+    warehouse_longitude = serializers.DecimalField(
+        max_digits=GEO_COORD_MAX_DIGITS,
+        decimal_places=GEO_COORD_DECIMAL_PLACES,
+    )
+    radius_km = serializers.DecimalField(
+        max_digits=8,
+        decimal_places=3,
+        min_value=Decimal('0.001'),
+        max_value=Decimal('500'),
+    )
+    customer_latitude = serializers.DecimalField(
+        max_digits=GEO_COORD_MAX_DIGITS,
+        decimal_places=GEO_COORD_DECIMAL_PLACES,
+    )
+    customer_longitude = serializers.DecimalField(
+        max_digits=GEO_COORD_MAX_DIGITS,
+        decimal_places=GEO_COORD_DECIMAL_PLACES,
+    )
+
+    def validate(self, attrs):
+        from apps.core.geo import validate_latitude, validate_longitude
+
+        try:
+            validate_latitude(attrs['warehouse_latitude'])
+            validate_longitude(attrs['warehouse_longitude'])
+            validate_latitude(attrs['customer_latitude'])
+            validate_longitude(attrs['customer_longitude'])
+        except ValueError as exc:
+            raise serializers.ValidationError(str(exc)) from exc
+        return attrs
 
 
 class DeliveryZoneCheckResponseSerializer(serializers.Serializer):
     allowed = serializers.BooleanField()
     message = serializers.CharField(allow_blank=True)
+    matched_zone_id = serializers.IntegerField(allow_null=True, required=False)
     nearest_zone_id = serializers.IntegerField(allow_null=True, required=False)
     distance_m = serializers.FloatField(allow_null=True, required=False)
+    distance_km = serializers.FloatField(allow_null=True, required=False)
 
 
 class CashbackSettingsSerializer(serializers.ModelSerializer):

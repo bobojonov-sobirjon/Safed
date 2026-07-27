@@ -559,6 +559,8 @@ created → confirmed → picking → shipped → delivered → completed
 
 Before checkout, verify address is in delivery zone.
 
+> **To‘liq hujjat (admin + Haversine + km):** [ADMIN_DELIVERY_ZONE_GEO_API.md](./ADMIN_DELIVERY_ZONE_GEO_API.md)
+
 | | |
 |---|---|
 | **Method** | `GET` |
@@ -567,16 +569,18 @@ Before checkout, verify address is in delivery zone.
 
 | Param | Type | Required |
 |-------|------|----------|
-| `lat` | decimal | **yes** |
-| `long` | decimal | **yes** |
+| `latitude` yoki `lat` | decimal | **yes** |
+| `longitude` yoki `long` | decimal | **yes** |
 
 **Response `200`:**
 ```json
 {
   "allowed": true,
   "message": "",
+  "matched_zone_id": 1,
   "nearest_zone_id": 1,
-  "distance_m": 1250.5
+  "distance_m": 1250.5,
+  "distance_km": 1.251
 }
 ```
 
@@ -957,21 +961,27 @@ Cashback is accrued when order completes (cash QR confirm or card `delivered`).
 
 ### 12.3 Delivery Zones
 
+> **Frontend hujjat:** [ADMIN_DELIVERY_ZONE_GEO_API.md](./ADMIN_DELIVERY_ZONE_GEO_API.md)
+
 | Method | URL |
 |--------|-----|
 | `GET` | `/admin/delivery-zones/` |
 | `POST` | `/admin/delivery-zones/` |
 | `PATCH` | `/admin/delivery-zones/{id}/` |
 | `DELETE` | `/admin/delivery-zones/{id}/` |
+| `POST` | `/admin/delivery-zones/preview/` |
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
 | `name` | string | no | Zone label |
-| `address` | string | **yes** | Center address text |
-| `lat` | decimal | **yes** | Center latitude |
-| `long` | decimal | **yes** | Center longitude |
-| `radius_m` | integer | **yes** | Radius in meters |
+| `address` | string | no | Center address text |
+| `latitude` / `lat` | decimal | **yes** (create) | Center latitude (−90…90) |
+| `longitude` / `long` | decimal | **yes** (create) | Center longitude (−180…180) |
+| `radius_km` | decimal | **yes*** | Radius in km (preferred from frontend) |
+| `radius_m` | integer | **yes*** | Radius in meters (legacy) |
 | `is_active` | boolean | no | Default `true` |
+
+\* Create da `radius_km` **yoki** `radius_m` kerak. Response da `radius_km_display` ham qaytadi.
 
 ### 12.4 Cashback Settings (singleton)
 
@@ -1047,26 +1057,32 @@ Cashback is accrued when order completes (cash QR confirm or card `delivered`).
 }
 ```
 
-### 13.3 Stock Receipts (Приход)
+### 13.3 Stock Receipts (Приход / Закупки)
 
 **Workflow:** Draft header → Add items → Post → stock increases
 
+> **Admin panel (frontend) uchun to‘liq hujjat:** [ADMIN_PURCHASE_RECEIPTS_API.md](./ADMIN_PURCHASE_RECEIPTS_API.md)
+
 | Method | URL | Description |
 |--------|-----|-------------|
-| `GET` | `/inventory/receipts/` | List (`?status=`, `?supplier=`, `?date_from=`, `?date_to=`) |
-| `POST` | `/inventory/receipts/` | Create draft |
-| `GET` | `/inventory/receipts/{id}/` | Detail + items |
+| `GET` | `/inventory/receipts/` | List (`?status=`, `?payment_status=`, `?supplier=`, `?q=`, `?date_from=`, `?date_to=`) |
+| `POST` | `/inventory/receipts/` | Create draft (`supplier_id` required; `doc_number`/`doc_date`/`notes` optional) |
+| `GET` | `/inventory/receipts/{id}/` | Detail + items (`subtotal`, `debt`, `payment_status`) |
 | `PATCH` | `/inventory/receipts/{id}/` | Update header (draft only) |
+| `DELETE` | `/inventory/receipts/{id}/` | Delete draft |
 | `POST` | `/inventory/receipts/{id}/post/` | Post → increase stock |
+| `POST` | `/inventory/receipts/{id}/unpost/` | Unpost → draft, reverse stock |
 | `POST` | `/inventory/receipts/{id}/cancel/` | Cancel (reverses stock if posted) |
+| `POST` | `/inventory/receipts/{id}/payment/` | Set `paid_amount` (Оплачено) |
 
 **Create draft body:**
 
 | Field | Type | Required |
 |-------|------|----------|
 | `supplier_id` | integer | **yes** |
-| `doc_number` | string | **yes** (unique) |
-| `doc_date` | date | **yes** |
+| `doc_number` | string | no (auto 1, 2, 3…) |
+| `doc_date` | date | no (default today) |
+| `notes` | string | no |
 
 **Receipt item (POST/PATCH `/inventory/receipts/{id}/items/`):**
 
@@ -1075,12 +1091,11 @@ Cashback is accrued when order completes (cash QR confirm or card `delivered`).
 | `product_id` | integer | **yes** |
 | `quantity` | integer | **yes** (min 1) |
 | `purchase_price` | decimal | **yes** |
-| `sell_price` | decimal | no* |
-| `margin_percent` | decimal | no* |
+| `sell_price` | decimal | no |
+| `margin_percent` | decimal | no |
+| `update_catalog_price` | boolean | no (default `false`) |
 
-\* One of `sell_price` or `margin_percent` required.
-
-**On post:** `Products.quantity` increases, `Products.price` updated from `sell_price`.
+**On post:** `Products.quantity` increases; `Products.price` updates only if `update_catalog_price=true`.
 
 ### 13.4 Reconciliation Acts (formal акт сверки)
 
