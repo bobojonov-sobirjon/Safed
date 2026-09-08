@@ -147,7 +147,7 @@ SMS matni (Eskiz tasdiqlangan):
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
 | `phone` | string | **yes** | Same phone as step 1 |
-| `code` | string | **yes** | 6-digit OTP |
+| `code` | string | **yes** | 4-digit OTP |
 
 **Example request:**
 ```json

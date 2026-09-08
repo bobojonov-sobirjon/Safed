@@ -7,7 +7,8 @@ import string
 from django.conf import settings
 
 
-def generate_otp(length: int = 6) -> str:
+def generate_otp(length: int = 4) -> str:
+    """Default 4-digit OTP (Eskiz shablon: 0000)."""
     return ''.join(random.choices(string.digits, k=length))
 
 
@@ -25,11 +26,11 @@ def resolve_login_otp(*, store_review_code: str | None = None) -> str:
     Priority:
     1) App Store review phone OTP (caller passes it)
     2) OTP_TEST_CODE (all phones, e.g. 1111 while Eskiz is down)
-    3) Random 6-digit
+    3) Random 4-digit
     """
     if store_review_code:
         return store_review_code
     test = otp_test_code()
     if test:
         return test
-    return generate_otp()
+    return generate_otp(4)

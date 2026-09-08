@@ -181,7 +181,7 @@ class SendOTPView(APIView):
             'type': 'object',
             'properties': {
                 'phone': {'type': 'string', 'description': 'Номер телефона', 'example': '998901234567'},
-                'code': {'type': 'string', 'description': '6-значный код', 'example': '123456'},
+                'code': {'type': 'string', 'description': '4-значный код', 'example': '4821'},
             },
             'required': ['phone', 'code'],
         }

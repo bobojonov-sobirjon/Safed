@@ -26,3 +26,11 @@ class EskizTemplateTests(SimpleTestCase):
         self.assertTrue(_sms_accepted(200, {'status': 'waiting', 'id': 'abc'}))
         self.assertTrue(_sms_accepted(200, {'status': 'success'}))
         self.assertFalse(_sms_accepted(400, {'status': 'waiting'}))
+
+    def test_otp_is_four_digits(self):
+        from apps.accounts.services.otp import generate_otp, resolve_login_otp
+
+        code = generate_otp()
+        self.assertEqual(len(code), 4)
+        self.assertTrue(code.isdigit())
+        self.assertEqual(len(resolve_login_otp()), 4)
