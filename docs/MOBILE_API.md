@@ -120,6 +120,11 @@ DRF `LimitOffsetPagination` is used on products; some endpoints return `{ count,
 }
 ```
 
+SMS matni (Eskiz tasdiqlangan):  
+`Safet Go mobil ilovasiga kirish uchun tasdiqlash kodi: CODE. Kodni hech kimga bermang`
+
+> Server sozlamasi: [ESKIZ_SMS.md](./ESKIZ_SMS.md)
+
 **DEBUG mode:** if SMS fails, response may include `"code": "123456"` for testing.
 
 **Errors `400`:**

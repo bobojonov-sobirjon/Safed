@@ -491,6 +491,18 @@ LOW_STOCK_THRESHOLD = int(os.getenv('LOW_STOCK_THRESHOLD', '5'))
 STORE_REVIEW_USER_PHONE = os.getenv('STORE_REVIEW_USER_PHONE', '').strip()
 STORE_REVIEW_USER_OTP = os.getenv('STORE_REVIEW_USER_OTP', '').strip()
 
+# Fixed OTP for all phones while Eskiz SMS is unavailable (e.g. 1111). Empty = real SMS.
+OTP_TEST_CODE = os.getenv('OTP_TEST_CODE', '').strip()
+
+# Eskiz.uz SMS — ESKIZ_PASSWORD = API secret (web kabinet paroli emas!)
+ESKIZ_EMAIL = os.getenv('ESKIZ_EMAIL', '').strip().strip('"').strip("'")
+ESKIZ_PASSWORD = os.getenv('ESKIZ_PASSWORD', '').strip().strip('"').strip("'")
+ESKIZ_FROM = os.getenv('ESKIZ_FROM', '4546').strip().strip('"').strip("'") or '4546'
+ESKIZ_OTP_TEMPLATE = os.getenv(
+    'ESKIZ_OTP_TEMPLATE',
+    'Safet Go mobil ilovasiga kirish uchun tasdiqlash kodi: {code}. Kodni hech kimga bermang',
+).strip()
+
 # =============================================================================
 # RATE LIMITING
 # =============================================================================

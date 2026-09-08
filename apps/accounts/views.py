@@ -1,5 +1,3 @@
-import random
-import string
 from django.conf import settings
 from rest_framework import status
 from rest_framework.views import APIView
@@ -30,7 +28,8 @@ from .serializers import (
     UserDeviceWriteSerializer,
     UserDevicePatchSerializer,
 )
-from .services.eskiz import send_sms
+from .services.eskiz import send_otp_sms
+from .services.otp import is_otp_test_mode, resolve_login_otp
 from .services.store_review import (
     is_store_review_login,
     is_store_review_phone,
@@ -58,10 +57,6 @@ def is_super_admin(user):
 
 def user_is_staff(user):
     return user.groups.filter(name__in=STAFF_GROUPS).exists()
-
-
-def generate_otp(length=6):
-    return ''.join(random.choices(string.digits, k=length))
 
 
 def get_tokens_for_user(user):
@@ -112,9 +107,11 @@ def _jwt_login_response(user) -> Response:
 @extend_schema(
     tags=['Авторизация'],
     summary='Отправить SMS код',
-    description='''Отправка OTP на указанный номер телефона.
+    description='''Отправка OTP на указанный номер телефона (Eskiz).
 
-**Примечание:** При DEBUG=True код возвращается в ответе.
+Tasdiqlangan matn: `Safet Go mobil ilovasiga kirish uchun tasdiqlash kodi: CODE. Kodni hech kimga bermang`
+
+**Тест:** `.env` da `OTP_TEST_CODE=1111` bo‘lsa — SMS yuborilmaydi.
 ''',
     request={
         'application/json': {
@@ -144,12 +141,19 @@ class SendOTPView(APIView):
             PhoneOTP.objects.create(phone=canonical, code=code)
             return Response({'message': 'СМС код отправлен'}, status=status.HTTP_200_OK)
 
-        code = generate_otp()
+        code = resolve_login_otp()
 
         PhoneOTP.objects.filter(phone=phone).delete()
         PhoneOTP.objects.create(phone=phone, code=code)
-        message = f'Safed. Kod: {code}'
-        result = send_sms(phone, message, code)
+
+        # OTP_TEST_CODE bo‘lsa — SMS yo‘q (faqat test)
+        if is_otp_test_mode():
+            payload = {'message': 'СМС код отправлен (test mode)'}
+            if settings.DEBUG:
+                payload['code'] = code
+            return Response(payload, status=status.HTTP_200_OK)
+
+        result = send_otp_sms(phone, code)
         if settings.DEBUG and not result.get('success'):
             return Response({
                 'message': result.get('message', 'СМС не отправлено'),
@@ -695,17 +699,24 @@ class UserPasswordSendCodeView(APIView):
         if not phone:
             return Response({'detail': 'Телефон не указан'}, status=status.HTTP_400_BAD_REQUEST)
 
-        code = generate_otp()
+        code = resolve_login_otp()
 
         PhoneOTP.objects.filter(phone=phone).delete()
         PhoneOTP.objects.create(phone=phone, code=code)
-        message = f'Safed. Смена пароля. Код: {code}'
-        result = send_sms(phone, message, code)
+
+        if is_otp_test_mode():
+            payload = {'message': 'СМС код отправлен (test mode)'}
+            if settings.DEBUG:
+                payload['code'] = code
+            return Response(payload, status=status.HTTP_200_OK)
+
+        # Parol almashtirish ham shu tasdiqlangan login shablonidan foydalanadi
+        result = send_otp_sms(phone, code)
         if result.get('success'):
             return Response({'message': 'СМС код отправлен'}, status=status.HTTP_200_OK)
         return Response({
             'message': result.get('message', 'СМС не отправлено'),
-            'code': result.get('code'),
+            'code': code if settings.DEBUG else result.get('code'),
             'detail': 'Используйте код для PATCH /users/me/password/',
         }, status=status.HTTP_200_OK)
 
